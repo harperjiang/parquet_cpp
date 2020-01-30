@@ -1,0 +1,6 @@
+#ifndef PARQUET_CPP_LIBRARY_H
+#define PARQUET_CPP_LIBRARY_H
+
+void hello();
+
+#endif //PARQUET_CPP_LIBRARY_H
