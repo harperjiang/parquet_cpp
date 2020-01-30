@@ -144,9 +144,9 @@ macro(build_arrow)
     externalproject_add(arrow_ep
             URL ${ARROW_SOURCE_URL}
             URL_HASH "SHA256=${ARROW_BUILD_SHA256_CHECKSUM}"
-            BUILD_BYPRODUCTS "${THRIFT_STATIC_LIB}" "${THRIFT_COMPILER}"
-            CMAKE_ARGS ${THRIFT_CMAKE_ARGS}
-            DEPENDS ${THRIFT_DEPENDENCIES} ${EP_LOG_OPTIONS})
+            BUILD_BYPRODUCTS "${ARROW_STATIC_LIB}"
+            CMAKE_ARGS ${ARROW_CMAKE_ARGS}
+            DEPENDS ${ARROW_DEPENDENCIES} ${EP_LOG_OPTIONS})
 
     add_library(Arrow::arrow STATIC IMPORTED)
     # The include directory must exist before it is referenced by a target.
