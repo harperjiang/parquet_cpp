@@ -27,7 +27,6 @@
 #include <utility>
 #include <vector>
 
-#include "parquet/arrow/schema.h"
 #include "parquet/column_reader.h"
 #include "parquet/file_reader.h"
 #include "parquet/metadata.h"
@@ -116,18 +115,84 @@ struct ReaderContext {
   ::arrow::MemoryPool* pool;
   FileColumnIteratorFactory iterator_factory;
   bool filter_leaves;
-  std::shared_ptr<std::unordered_set<int>> included_leaves;
+  std::unordered_set<int> included_leaves;
 
   bool IncludesLeaf(int leaf_index) const {
-    if (this->filter_leaves) {
-      return this->included_leaves->find(leaf_index) != this->included_leaves->end();
+    return (!this->filter_leaves ||
+            (included_leaves.find(leaf_index) != included_leaves.end()));
+  }
+};
+
+struct PARQUET_EXPORT SchemaField {
+  std::shared_ptr<::arrow::Field> field;
+  std::vector<SchemaField> children;
+
+  // Only set for leaf nodes
+  int column_index = -1;
+
+  int16_t max_definition_level;
+  int16_t max_repetition_level;
+
+  bool is_leaf() const { return column_index != -1; }
+
+  Status GetReader(const std::shared_ptr<ReaderContext>& context,
+                   std::unique_ptr<ColumnReaderImpl>* out) const;
+};
+
+struct SchemaManifest {
+  const SchemaDescriptor* descr;
+  std::shared_ptr<::arrow::Schema> origin_schema;
+  std::shared_ptr<const KeyValueMetadata> schema_metadata;
+  std::vector<SchemaField> schema_fields;
+
+  std::unordered_map<int, const SchemaField*> column_index_to_field;
+  std::unordered_map<const SchemaField*, const SchemaField*> child_to_parent;
+
+  Status GetColumnField(int column_index, const SchemaField** out) const {
+    auto it = column_index_to_field.find(column_index);
+    if (it == column_index_to_field.end()) {
+      return Status::KeyError("Column index ", column_index,
+                              " not found in schema manifest, may be malformed");
+    }
+    *out = it->second;
+    return Status::OK();
+  }
+
+  const SchemaField* GetParent(const SchemaField* field) const {
+    // Returns nullptr also if not found
+    auto it = child_to_parent.find(field);
+    if (it == child_to_parent.end()) {
+      return nullptr;
+    }
+    return it->second;
+  }
+
+  bool GetFieldIndices(const std::vector<int>& column_indices, std::vector<int>* out) {
+    // Coalesce a list of schema fields indices which are the roots of the
+    // columns referred by a list of column indices
+    const schema::GroupNode* group = descr->group_node();
+    std::unordered_set<int> already_added;
+    out->clear();
+    for (auto& column_idx : column_indices) {
+      auto field_node = descr->GetColumnRoot(column_idx);
+      auto field_idx = group->FieldIndex(*field_node);
+      if (field_idx < 0) {
+        return false;
+      }
+      auto insertion = already_added.insert(field_idx);
+      if (insertion.second) {
+        out->push_back(field_idx);
+      }
     }
     return true;
   }
 };
 
-Status GetReader(const SchemaField& field, const std::shared_ptr<ReaderContext>& context,
-                 std::unique_ptr<ColumnReaderImpl>* out);
+PARQUET_EXPORT
+Status BuildSchemaManifest(const SchemaDescriptor* schema,
+                           const std::shared_ptr<const KeyValueMetadata>& metadata,
+                           const ArrowReaderProperties& properties,
+                           SchemaManifest* manifest);
 
 }  // namespace arrow
 }  // namespace parquet

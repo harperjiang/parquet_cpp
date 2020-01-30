@@ -533,3 +533,8 @@ function(ARROW_INSTALL_ALL_HEADERS PATH)
   install(FILES ${PUBLIC_HEADERS} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${PATH}")
 endfunction()
 
+function(ARROW_ADD_PKG_CONFIG MODULE)
+  configure_file(${MODULE}.pc.in "${CMAKE_CURRENT_BINARY_DIR}/${MODULE}.pc" @ONLY)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${MODULE}.pc"
+          DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig/")
+endfunction()

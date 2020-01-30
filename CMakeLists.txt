@@ -55,6 +55,7 @@ set(ARROW_SOURCE_URL FROM-APACHE-MIRROR)
 set(ARROW_BUILD_VERSION "0.15.1")
 set(ARROW_BUILD_SHA256_CHECKSUM "9a2c58c72310eafebb4997244cbeeb8c26696320d0ae3eb3e8512f75ef856fc9")
 build_arrow()
+include_directories(${ARROW_INCLUDE_DIR})
 
 include(BuildUtils)
 

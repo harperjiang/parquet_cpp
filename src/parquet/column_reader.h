@@ -19,7 +19,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
 #include <vector>
 
 #include "parquet/exception.h"
@@ -44,7 +43,6 @@ class RleDecoder;
 
 namespace parquet {
 
-class Decryptor;
 class Page;
 
 // 16 MB is the default maximum page header size
@@ -74,23 +72,6 @@ class PARQUET_EXPORT LevelDecoder {
   std::unique_ptr<::arrow::BitUtil::BitReader> bit_packed_decoder_;
 };
 
-struct CryptoContext {
-  CryptoContext(bool start_with_dictionary_page, int16_t rg_ordinal, int16_t col_ordinal,
-                std::shared_ptr<Decryptor> meta, std::shared_ptr<Decryptor> data)
-      : start_decrypt_with_dictionary_page(start_with_dictionary_page),
-        row_group_ordinal(rg_ordinal),
-        column_ordinal(col_ordinal),
-        meta_decryptor(std::move(meta)),
-        data_decryptor(std::move(data)) {}
-  CryptoContext() {}
-
-  bool start_decrypt_with_dictionary_page = false;
-  int16_t row_group_ordinal = -1;
-  int16_t column_ordinal = -1;
-  std::shared_ptr<Decryptor> meta_decryptor;
-  std::shared_ptr<Decryptor> data_decryptor;
-};
-
 // Abstract page iterator interface. This way, we can feed column pages to the
 // ColumnReader through whatever mechanism we choose
 class PARQUET_EXPORT PageReader {
@@ -98,9 +79,9 @@ class PARQUET_EXPORT PageReader {
   virtual ~PageReader() = default;
 
   static std::unique_ptr<PageReader> Open(
-      std::shared_ptr<ArrowInputStream> stream, int64_t total_num_rows,
-      Compression::type codec, ::arrow::MemoryPool* pool = ::arrow::default_memory_pool(),
-      const CryptoContext* ctx = NULLPTR);
+      const std::shared_ptr<ArrowInputStream>& stream, int64_t total_num_rows,
+      Compression::type codec,
+      ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
 
   // @returns: shared_ptr<Page>(nullptr) on EOS, std::shared_ptr<Page>
   // containing new Page otherwise
@@ -155,7 +136,7 @@ class TypedColumnReader : public ColumnReader {
   /// column and leave spaces for null entries on the lowest level in the values
   /// buffer.
   ///
-  /// In comparison to ReadBatch the length of repetition and definition levels
+  /// In comparision to ReadBatch the length of repetition and definition levels
   /// is the same as of the number of values read for max_definition_level == 1.
   /// In the case of max_definition_level > 1, the repetition and definition
   /// levels are larger than the values but the values include the null entries

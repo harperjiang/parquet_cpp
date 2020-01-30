@@ -32,10 +32,17 @@
 
 #include "arrow/io/memory.h"
 #include "arrow/status.h"
-#include "arrow/testing/gtest_util.h"
 #include "arrow/util/compression.h"
 
 namespace parquet {
+
+#define ASSERT_OK(expr)         \
+  do {                          \
+    ::arrow::Status s = (expr); \
+    if (!s.ok()) {              \
+      FAIL() << s.ToString();   \
+    }                           \
+  } while (0)
 
 using ::arrow::io::BufferReader;
 
@@ -100,7 +107,7 @@ class TestPageSerde : public ::testing::Test {
 
   void ResetStream() { out_stream_ = CreateOutputStream(); }
 
-  void EndStream() { PARQUET_ASSIGN_OR_THROW(out_buffer_, out_stream_->Finish()); }
+  void EndStream() { PARQUET_THROW_NOT_OK(out_stream_->Finish(&out_buffer_)); }
 
  protected:
   std::shared_ptr<::arrow::io::BufferOutputStream> out_stream_;
@@ -184,7 +191,8 @@ TEST_F(TestPageSerde, TestLargePageHeaders) {
   int max_header_size = 512 * 1024;  // 512 KB
   ASSERT_NO_FATAL_FAILURE(WriteDataPageHeader(max_header_size));
 
-  ASSERT_OK_AND_ASSIGN(int64_t position, out_stream_->Tell());
+  int64_t position = -1;
+  ASSERT_OK(out_stream_->Tell(&position));
   ASSERT_GE(max_header_size, position);
 
   // check header size is between 256 KB to 16 MB
@@ -205,7 +213,8 @@ TEST_F(TestPageSerde, TestFailLargePageHeaders) {
   // Serialize the Page header
   int max_header_size = 512 * 1024;  // 512 KB
   ASSERT_NO_FATAL_FAILURE(WriteDataPageHeader(max_header_size));
-  ASSERT_OK_AND_ASSIGN(int64_t position, out_stream_->Tell());
+  int64_t position = -1;
+  ASSERT_OK(out_stream_->Tell(&position));
   ASSERT_GE(max_header_size, position);
 
   int smaller_max_size = 128 * 1024;
@@ -219,24 +228,8 @@ TEST_F(TestPageSerde, TestFailLargePageHeaders) {
 }
 
 TEST_F(TestPageSerde, Compression) {
-  std::vector<Compression::type> codec_types;
-
-#ifdef ARROW_WITH_SNAPPY
-  codec_types.push_back(Compression::SNAPPY);
-#endif
-
-#ifdef ARROW_WITH_BROTLI
-  codec_types.push_back(Compression::BROTLI);
-#endif
-
-#ifdef ARROW_WITH_GZIP
-  codec_types.push_back(Compression::GZIP);
-#endif
-
-#ifdef ARROW_WITH_LZ4
-  codec_types.push_back(Compression::LZ4);
-#endif
-
+  std::vector<Compression::type> codec_types = {Compression::GZIP, Compression::SNAPPY,
+                                                Compression::BROTLI, Compression::LZ4};
 #ifdef ARROW_WITH_ZSTD
   codec_types.push_back(Compression::ZSTD);
 #endif
@@ -265,8 +258,8 @@ TEST_F(TestPageSerde, Compression) {
       buffer.resize(max_compressed_size);
 
       int64_t actual_size;
-      ASSERT_OK_AND_ASSIGN(
-          actual_size, codec->Compress(data_size, data, max_compressed_size, &buffer[0]));
+      ASSERT_OK(codec->Compress(data_size, data, max_compressed_size, &buffer[0],
+                                &actual_size));
 
       ASSERT_NO_FATAL_FAILURE(
           WriteDataPageHeader(1024, data_size, static_cast<int32_t>(actual_size)));
@@ -287,7 +280,7 @@ TEST_F(TestPageSerde, Compression) {
 
     ResetStream();
   }
-}  // namespace parquet
+}
 
 TEST_F(TestPageSerde, LZONotSupported) {
   // Must await PARQUET-530
@@ -348,8 +341,9 @@ TEST_F(TestParquetFileReader, IncompleteMetadata) {
       stream->Write(reinterpret_cast<const uint8_t*>(&metadata_len), sizeof(uint32_t)));
   ASSERT_OK(stream->Write(reinterpret_cast<const uint8_t*>(magic), strlen(magic)));
 
-  ASSERT_OK_AND_ASSIGN(auto buffer, stream->Finish());
-  ASSERT_NO_FATAL_FAILURE(AssertInvalidFileThrows(buffer));
+  std::shared_ptr<Buffer> result;
+  ASSERT_OK(stream->Finish(&result));
+  ASSERT_NO_FATAL_FAILURE(AssertInvalidFileThrows(result));
 }
 
 }  // namespace parquet

@@ -150,7 +150,8 @@ static void BM_ReadInt64Column(::benchmark::State& state) {
                      values.data());
   writer->Close();
 
-  PARQUET_ASSIGN_OR_THROW(auto src, stream->Finish());
+  std::shared_ptr<Buffer> src;
+  PARQUET_THROW_NOT_OK(stream->Finish(&src));
   std::vector<int64_t> values_out(state.range(1));
   std::vector<int16_t> definition_levels_out(state.range(1));
   std::vector<int16_t> repetition_levels_out(state.range(1));

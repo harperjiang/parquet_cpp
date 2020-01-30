@@ -466,19 +466,8 @@ std::unique_ptr<Codec> GetCodec(Compression::type codec);
 PARQUET_EXPORT
 std::unique_ptr<Codec> GetCodec(Compression::type codec, int compression_level);
 
-struct ParquetCipher {
+struct Encryption {
   enum type { AES_GCM_V1 = 0, AES_GCM_CTR_V1 = 1 };
-};
-
-struct AadMetadata {
-  std::string aad_prefix;
-  std::string aad_file_unique;
-  bool supply_aad_prefix;
-};
-
-struct EncryptionAlgorithm {
-  ParquetCipher::type algorithm;
-  AadMetadata aad;
 };
 
 // parquet::PageType

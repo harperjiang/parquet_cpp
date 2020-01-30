@@ -21,14 +21,12 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <string>
 #include <utility>
 #include <vector>
 
 #include "arrow/array.h"
 #include "arrow/buffer_builder.h"
 #include "arrow/compute/api.h"
-#include "arrow/status.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/bit_stream_utils.h"
@@ -36,10 +34,9 @@
 #include "arrow/util/compression.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/rle_encoding.h"
+
 #include "parquet/column_page.h"
 #include "parquet/encoding.h"
-#include "parquet/encryption_internal.h"
-#include "parquet/internal_file_encryptor.h"
 #include "parquet/metadata.h"
 #include "parquet/platform.h"
 #include "parquet/properties.h"
@@ -53,8 +50,6 @@ namespace parquet {
 using arrow::Status;
 using arrow::compute::Datum;
 using arrow::internal::checked_cast;
-
-static constexpr int16_t kNonPageOrdinal = static_cast<int16_t>(-1);
 
 using BitWriter = arrow::BitUtil::BitWriter;
 using RleEncoder = arrow::util::RleEncoder;
@@ -140,36 +135,25 @@ int LevelEncoder::Encode(int batch_size, const int16_t* levels) {
 // and the page metadata.
 class SerializedPageWriter : public PageWriter {
  public:
-  SerializedPageWriter(std::shared_ptr<ArrowOutputStream> sink, Compression::type codec,
-                       int compression_level, ColumnChunkMetaDataBuilder* metadata,
-                       int16_t row_group_ordinal, int16_t column_chunk_ordinal,
-                       MemoryPool* pool = arrow::default_memory_pool(),
-                       std::shared_ptr<Encryptor> meta_encryptor = nullptr,
-                       std::shared_ptr<Encryptor> data_encryptor = nullptr)
-      : sink_(std::move(sink)),
+  SerializedPageWriter(const std::shared_ptr<ArrowOutputStream>& sink,
+                       Compression::type codec, int compression_level,
+                       ColumnChunkMetaDataBuilder* metadata,
+                       MemoryPool* pool = arrow::default_memory_pool())
+      : sink_(sink),
         metadata_(metadata),
         pool_(pool),
         num_values_(0),
         dictionary_page_offset_(0),
         data_page_offset_(0),
         total_uncompressed_size_(0),
-        total_compressed_size_(0),
-        page_ordinal_(0),
-        row_group_ordinal_(row_group_ordinal),
-        column_ordinal_(column_chunk_ordinal),
-        meta_encryptor_(std::move(meta_encryptor)),
-        data_encryptor_(std::move(data_encryptor)),
-        encryption_buffer_(AllocateBuffer(pool, 0)) {
-    if (data_encryptor_ != nullptr || meta_encryptor_ != nullptr) {
-      InitEncryption();
-    }
+        total_compressed_size_(0) {
     compressor_ = GetCodec(codec, compression_level);
     thrift_serializer_.reset(new ThriftSerializer);
   }
 
   int64_t WriteDictionaryPage(const DictionaryPage& page) override {
     int64_t uncompressed_size = page.size();
-    std::shared_ptr<Buffer> compressed_data;
+    std::shared_ptr<Buffer> compressed_data = nullptr;
     if (has_compressor()) {
       auto buffer = std::static_pointer_cast<ResizableBuffer>(
           AllocateBuffer(pool_, uncompressed_size));
@@ -184,53 +168,35 @@ class SerializedPageWriter : public PageWriter {
     dict_page_header.__set_encoding(ToThrift(page.encoding()));
     dict_page_header.__set_is_sorted(page.is_sorted());
 
-    const uint8_t* output_data_buffer = compressed_data->data();
-    int32_t output_data_len = static_cast<int32_t>(compressed_data->size());
-
-    if (data_encryptor_.get()) {
-      UpdateEncryption(encryption::kDictionaryPage);
-      PARQUET_THROW_NOT_OK(encryption_buffer_->Resize(
-          data_encryptor_->CiphertextSizeDelta() + output_data_len, false));
-      output_data_len = data_encryptor_->Encrypt(compressed_data->data(), output_data_len,
-                                                 encryption_buffer_->mutable_data());
-      output_data_buffer = encryption_buffer_->data();
-    }
-
     format::PageHeader page_header;
     page_header.__set_type(format::PageType::DICTIONARY_PAGE);
     page_header.__set_uncompressed_page_size(static_cast<int32_t>(uncompressed_size));
-    page_header.__set_compressed_page_size(static_cast<int32_t>(output_data_len));
+    page_header.__set_compressed_page_size(static_cast<int32_t>(compressed_data->size()));
     page_header.__set_dictionary_page_header(dict_page_header);
     // TODO(PARQUET-594) crc checksum
 
-    PARQUET_ASSIGN_OR_THROW(int64_t start_pos, sink_->Tell());
+    int64_t start_pos = -1;
+    PARQUET_THROW_NOT_OK(sink_->Tell(&start_pos));
     if (dictionary_page_offset_ == 0) {
       dictionary_page_offset_ = start_pos;
     }
-
-    if (meta_encryptor_) {
-      UpdateEncryption(encryption::kDictionaryPageHeader);
-    }
-    int64_t header_size =
-        thrift_serializer_->Serialize(&page_header, sink_.get(), meta_encryptor_);
-
-    PARQUET_THROW_NOT_OK(sink_->Write(output_data_buffer, output_data_len));
+    int64_t header_size = thrift_serializer_->Serialize(&page_header, sink_.get());
+    PARQUET_THROW_NOT_OK(sink_->Write(compressed_data));
 
     total_uncompressed_size_ += uncompressed_size + header_size;
-    total_compressed_size_ += output_data_len + header_size;
+    total_compressed_size_ += compressed_data->size() + header_size;
 
-    PARQUET_ASSIGN_OR_THROW(int64_t final_pos, sink_->Tell());
+    int64_t final_pos = -1;
+    PARQUET_THROW_NOT_OK(sink_->Tell(&final_pos));
     return final_pos - start_pos;
   }
 
   void Close(bool has_dictionary, bool fallback) override {
-    if (meta_encryptor_ != nullptr) {
-      UpdateEncryption(encryption::kColumnMetaData);
-    }
     // index_page_offset = -1 since they are not supported
     metadata_->Finish(num_values_, dictionary_page_offset_, -1, data_page_offset_,
                       total_compressed_size_, total_uncompressed_size_, has_dictionary,
-                      fallback, meta_encryptor_);
+                      fallback);
+
     // Write metadata at end of column chunk
     metadata_->WriteTo(sink_.get());
   }
@@ -249,16 +215,17 @@ class SerializedPageWriter : public PageWriter {
     // underlying buffer only keeps growing. Resize to a smaller size does not reallocate.
     PARQUET_THROW_NOT_OK(dest_buffer->Resize(max_compressed_size, false));
 
-    PARQUET_ASSIGN_OR_THROW(
-        int64_t compressed_size,
+    int64_t compressed_size;
+    PARQUET_THROW_NOT_OK(
         compressor_->Compress(src_buffer.size(), src_buffer.data(), max_compressed_size,
-                              dest_buffer->mutable_data()));
+                              dest_buffer->mutable_data(), &compressed_size));
     PARQUET_THROW_NOT_OK(dest_buffer->Resize(compressed_size, false));
   }
 
   int64_t WriteDataPage(const CompressedDataPage& page) override {
     int64_t uncompressed_size = page.uncompressed_size();
     std::shared_ptr<Buffer> compressed_data = page.buffer();
+
     format::DataPageHeader data_page_header;
     data_page_header.__set_num_values(page.num_values());
     data_page_header.__set_encoding(ToThrift(page.encoding()));
@@ -268,43 +235,28 @@ class SerializedPageWriter : public PageWriter {
         ToThrift(page.repetition_level_encoding()));
     data_page_header.__set_statistics(ToThrift(page.statistics()));
 
-    const uint8_t* output_data_buffer = compressed_data->data();
-    int32_t output_data_len = static_cast<int32_t>(compressed_data->size());
-
-    if (data_encryptor_.get()) {
-      PARQUET_THROW_NOT_OK(encryption_buffer_->Resize(
-          data_encryptor_->CiphertextSizeDelta() + output_data_len, false));
-      UpdateEncryption(encryption::kDataPage);
-      output_data_len = data_encryptor_->Encrypt(compressed_data->data(), output_data_len,
-                                                 encryption_buffer_->mutable_data());
-      output_data_buffer = encryption_buffer_->data();
-    }
-
     format::PageHeader page_header;
     page_header.__set_type(format::PageType::DATA_PAGE);
     page_header.__set_uncompressed_page_size(static_cast<int32_t>(uncompressed_size));
-    page_header.__set_compressed_page_size(static_cast<int32_t>(output_data_len));
+    page_header.__set_compressed_page_size(static_cast<int32_t>(compressed_data->size()));
     page_header.__set_data_page_header(data_page_header);
     // TODO(PARQUET-594) crc checksum
 
-    PARQUET_ASSIGN_OR_THROW(int64_t start_pos, sink_->Tell());
+    int64_t start_pos = -1;
+    PARQUET_THROW_NOT_OK(sink_->Tell(&start_pos));
     if (data_page_offset_ == 0) {
       data_page_offset_ = start_pos;
     }
 
-    if (meta_encryptor_) {
-      UpdateEncryption(encryption::kDataPageHeader);
-    }
-    int64_t header_size =
-        thrift_serializer_->Serialize(&page_header, sink_.get(), meta_encryptor_);
-    PARQUET_THROW_NOT_OK(sink_->Write(output_data_buffer, output_data_len));
+    int64_t header_size = thrift_serializer_->Serialize(&page_header, sink_.get());
+    PARQUET_THROW_NOT_OK(sink_->Write(compressed_data));
 
     total_uncompressed_size_ += uncompressed_size + header_size;
-    total_compressed_size_ += output_data_len + header_size;
+    total_compressed_size_ += compressed_data->size() + header_size;
     num_values_ += page.num_values();
 
-    ++page_ordinal_;
-    PARQUET_ASSIGN_OR_THROW(int64_t current_pos, sink_->Tell());
+    int64_t current_pos = -1;
+    PARQUET_THROW_NOT_OK(sink_->Tell(&current_pos));
     return current_pos - start_pos;
   }
 
@@ -321,58 +273,6 @@ class SerializedPageWriter : public PageWriter {
   int64_t total_uncompressed_size() { return total_uncompressed_size_; }
 
  private:
-  // To allow UpdateEncryption on Close
-  friend class BufferedPageWriter;
-
-  void InitEncryption() {
-    // Prepare the AAD for quick update later.
-    if (data_encryptor_ != nullptr) {
-      data_page_aad_ = encryption::CreateModuleAad(
-          data_encryptor_->file_aad(), encryption::kDataPage, row_group_ordinal_,
-          column_ordinal_, kNonPageOrdinal);
-    }
-    if (meta_encryptor_ != nullptr) {
-      data_page_header_aad_ = encryption::CreateModuleAad(
-          meta_encryptor_->file_aad(), encryption::kDataPageHeader, row_group_ordinal_,
-          column_ordinal_, kNonPageOrdinal);
-    }
-  }
-
-  void UpdateEncryption(int8_t module_type) {
-    switch (module_type) {
-      case encryption::kColumnMetaData: {
-        meta_encryptor_->UpdateAad(encryption::CreateModuleAad(
-            meta_encryptor_->file_aad(), module_type, row_group_ordinal_, column_ordinal_,
-            kNonPageOrdinal));
-        break;
-      }
-      case encryption::kDataPage: {
-        encryption::QuickUpdatePageAad(data_page_aad_, page_ordinal_);
-        data_encryptor_->UpdateAad(data_page_aad_);
-        break;
-      }
-      case encryption::kDataPageHeader: {
-        encryption::QuickUpdatePageAad(data_page_header_aad_, page_ordinal_);
-        meta_encryptor_->UpdateAad(data_page_header_aad_);
-        break;
-      }
-      case encryption::kDictionaryPageHeader: {
-        meta_encryptor_->UpdateAad(encryption::CreateModuleAad(
-            meta_encryptor_->file_aad(), module_type, row_group_ordinal_, column_ordinal_,
-            kNonPageOrdinal));
-        break;
-      }
-      case encryption::kDictionaryPage: {
-        data_encryptor_->UpdateAad(encryption::CreateModuleAad(
-            data_encryptor_->file_aad(), module_type, row_group_ordinal_, column_ordinal_,
-            kNonPageOrdinal));
-        break;
-      }
-      default:
-        throw ParquetException("Unknown module type in UpdateEncryption");
-    }
-  }
-
   std::shared_ptr<ArrowOutputStream> sink_;
   ColumnChunkMetaDataBuilder* metadata_;
   MemoryPool* pool_;
@@ -381,65 +281,45 @@ class SerializedPageWriter : public PageWriter {
   int64_t data_page_offset_;
   int64_t total_uncompressed_size_;
   int64_t total_compressed_size_;
-  int16_t page_ordinal_;
-  int16_t row_group_ordinal_;
-  int16_t column_ordinal_;
 
   std::unique_ptr<ThriftSerializer> thrift_serializer_;
 
   // Compression codec to use.
   std::unique_ptr<arrow::util::Codec> compressor_;
-
-  std::string data_page_aad_;
-  std::string data_page_header_aad_;
-
-  std::shared_ptr<Encryptor> meta_encryptor_;
-  std::shared_ptr<Encryptor> data_encryptor_;
-
-  std::shared_ptr<ResizableBuffer> encryption_buffer_;
 };
 
 // This implementation of the PageWriter writes to the final sink on Close .
 class BufferedPageWriter : public PageWriter {
  public:
-  BufferedPageWriter(std::shared_ptr<ArrowOutputStream> sink, Compression::type codec,
-                     int compression_level, ColumnChunkMetaDataBuilder* metadata,
-                     int16_t row_group_ordinal, int16_t current_column_ordinal,
-                     MemoryPool* pool = arrow::default_memory_pool(),
-                     std::shared_ptr<Encryptor> meta_encryptor = nullptr,
-                     std::shared_ptr<Encryptor> data_encryptor = nullptr)
-      : final_sink_(std::move(sink)), metadata_(metadata), has_dictionary_pages_(false) {
+  BufferedPageWriter(const std::shared_ptr<ArrowOutputStream>& sink,
+                     Compression::type codec, int compression_level,
+                     ColumnChunkMetaDataBuilder* metadata,
+                     MemoryPool* pool = arrow::default_memory_pool())
+      : final_sink_(sink), metadata_(metadata) {
     in_memory_sink_ = CreateOutputStream(pool);
-    pager_ = std::unique_ptr<SerializedPageWriter>(
-        new SerializedPageWriter(in_memory_sink_, codec, compression_level, metadata,
-                                 row_group_ordinal, current_column_ordinal, pool,
-                                 std::move(meta_encryptor), std::move(data_encryptor)));
+    pager_ = std::unique_ptr<SerializedPageWriter>(new SerializedPageWriter(
+        in_memory_sink_, codec, compression_level, metadata, pool));
   }
 
   int64_t WriteDictionaryPage(const DictionaryPage& page) override {
-    has_dictionary_pages_ = true;
     return pager_->WriteDictionaryPage(page);
   }
 
   void Close(bool has_dictionary, bool fallback) override {
-    if (pager_->meta_encryptor_ != nullptr) {
-      pager_->UpdateEncryption(encryption::kColumnMetaData);
-    }
     // index_page_offset = -1 since they are not supported
-    PARQUET_ASSIGN_OR_THROW(int64_t final_position, final_sink_->Tell());
-    // dictionary page offset should be 0 iff there are no dictionary pages
-    auto dictionary_page_offset =
-        has_dictionary_pages_ ? pager_->dictionary_page_offset() + final_position : 0;
-    metadata_->Finish(pager_->num_values(), dictionary_page_offset, -1,
-                      pager_->data_page_offset() + final_position,
-                      pager_->total_compressed_size(), pager_->total_uncompressed_size(),
-                      has_dictionary, fallback, pager_->meta_encryptor_);
+    int64_t final_position = -1;
+    PARQUET_THROW_NOT_OK(final_sink_->Tell(&final_position));
+    metadata_->Finish(
+        pager_->num_values(), pager_->dictionary_page_offset() + final_position, -1,
+        pager_->data_page_offset() + final_position, pager_->total_compressed_size(),
+        pager_->total_uncompressed_size(), has_dictionary, fallback);
 
     // Write metadata at end of column chunk
     metadata_->WriteTo(in_memory_sink_.get());
 
     // flush everything to the serialized sink
-    PARQUET_ASSIGN_OR_THROW(auto buffer, in_memory_sink_->Finish());
+    std::shared_ptr<Buffer> buffer;
+    PARQUET_THROW_NOT_OK(in_memory_sink_->Finish(&buffer));
     PARQUET_THROW_NOT_OK(final_sink_->Write(buffer));
   }
 
@@ -458,32 +338,25 @@ class BufferedPageWriter : public PageWriter {
   ColumnChunkMetaDataBuilder* metadata_;
   std::shared_ptr<arrow::io::BufferOutputStream> in_memory_sink_;
   std::unique_ptr<SerializedPageWriter> pager_;
-  bool has_dictionary_pages_;
 };
 
 std::unique_ptr<PageWriter> PageWriter::Open(
-    std::shared_ptr<ArrowOutputStream> sink, Compression::type codec,
-    int compression_level, ColumnChunkMetaDataBuilder* metadata,
-    int16_t row_group_ordinal, int16_t column_chunk_ordinal, MemoryPool* pool,
-    bool buffered_row_group, std::shared_ptr<Encryptor> meta_encryptor,
-    std::shared_ptr<Encryptor> data_encryptor) {
+    const std::shared_ptr<ArrowOutputStream>& sink, Compression::type codec,
+    int compression_level, ColumnChunkMetaDataBuilder* metadata, MemoryPool* pool,
+    bool buffered_row_group) {
   if (buffered_row_group) {
     return std::unique_ptr<PageWriter>(
-        new BufferedPageWriter(std::move(sink), codec, compression_level, metadata,
-                               row_group_ordinal, column_chunk_ordinal, pool,
-                               std::move(meta_encryptor), std::move(data_encryptor)));
+        new BufferedPageWriter(sink, codec, compression_level, metadata, pool));
   } else {
     return std::unique_ptr<PageWriter>(
-        new SerializedPageWriter(std::move(sink), codec, compression_level, metadata,
-                                 row_group_ordinal, column_chunk_ordinal, pool,
-                                 std::move(meta_encryptor), std::move(data_encryptor)));
+        new SerializedPageWriter(sink, codec, compression_level, metadata, pool));
   }
 }
 
 // ----------------------------------------------------------------------
 // ColumnWriter
 
-const std::shared_ptr<WriterProperties>& default_writer_properties() {
+std::shared_ptr<WriterProperties> default_writer_properties() {
   static std::shared_ptr<WriterProperties> default_writer_properties =
       WriterProperties::Builder().build();
   return default_writer_properties;
@@ -1059,7 +932,7 @@ class TypedColumnWriterImpl : public ColumnWriterImpl, public TypedColumnWriter<
   void FallbackToPlainEncoding() {
     if (IsDictionaryEncoding(current_encoder_->encoding())) {
       WriteDictionaryPage();
-      // Serialize the buffered Dictionary Indices
+      // Serialize the buffered Dictionary Indicies
       FlushBufferedDataPages();
       fallback_ = true;
       // Only PLAIN encoding is supported for fallback in V1
@@ -1215,22 +1088,28 @@ struct SerializeFunctor {
 };
 
 template <typename ParquetType, typename ArrowType>
+inline Status SerializeData(const arrow::Array& array, ArrowWriteContext* ctx,
+                            typename ParquetType::c_type* out) {
+  using ArrayType = typename arrow::TypeTraits<ArrowType>::ArrayType;
+  SerializeFunctor<ParquetType, ArrowType> functor;
+  return functor.Serialize(checked_cast<const ArrayType&>(array), ctx, out);
+}
+
+template <typename ParquetType, typename ArrowType>
 Status WriteArrowSerialize(const arrow::Array& array, int64_t num_levels,
                            const int16_t* def_levels, const int16_t* rep_levels,
                            ArrowWriteContext* ctx,
                            TypedColumnWriter<ParquetType>* writer) {
   using ParquetCType = typename ParquetType::c_type;
-  using ArrayType = typename arrow::TypeTraits<ArrowType>::ArrayType;
 
-  ParquetCType* buffer = nullptr;
+  ParquetCType* buffer;
   PARQUET_THROW_NOT_OK(ctx->GetScratchData<ParquetCType>(array.length(), &buffer));
 
   bool no_nulls =
       writer->descr()->schema_node()->is_required() || (array.null_count() == 0);
 
-  SerializeFunctor<ParquetType, ArrowType> functor;
-  RETURN_NOT_OK(functor.Serialize(checked_cast<const ArrayType&>(array), ctx, buffer));
-
+  Status s = SerializeData<ParquetType, ArrowType>(array, ctx, buffer);
+  RETURN_NOT_OK(s);
   if (no_nulls) {
     PARQUET_CATCH_NOT_OK(writer->WriteBatch(num_levels, def_levels, rep_levels, buffer));
   } else {
@@ -1608,10 +1487,8 @@ Status TypedColumnWriterImpl<ByteArrayType>::WriteArrowDense(const int16_t* def_
 // Write Arrow to FIXED_LEN_BYTE_ARRAY
 
 template <typename ParquetType, typename ArrowType>
-struct SerializeFunctor<
-    ParquetType, ArrowType,
-    arrow::enable_if_t<arrow::is_fixed_size_binary_type<ArrowType>::value &&
-                       !arrow::is_decimal_type<ArrowType>::value>> {
+struct SerializeFunctor<ParquetType, ArrowType,
+                        arrow::enable_if_fixed_size_binary<ArrowType>> {
   Status Serialize(const arrow::FixedSizeBinaryArray& array, ArrowWriteContext*,
                    FLBA* out) {
     if (array.null_count() == 0) {
@@ -1631,61 +1508,55 @@ struct SerializeFunctor<
   }
 };
 
-// ----------------------------------------------------------------------
-// Write Arrow to Decimal128
+template <>
+Status WriteArrowSerialize<FLBAType, arrow::Decimal128Type>(
+    const arrow::Array& array, int64_t num_levels, const int16_t* def_levels,
+    const int16_t* rep_levels, ArrowWriteContext* ctx,
+    TypedColumnWriter<FLBAType>* writer) {
+  const auto& data = static_cast<const arrow::Decimal128Array&>(array);
+  const int64_t length = data.length();
 
-using arrow::internal::checked_pointer_cast;
+  FLBA* buffer;
+  RETURN_NOT_OK(ctx->GetScratchData<FLBA>(num_levels, &buffer));
 
-// Requires a custom serializer because decimal128 in parquet are in big-endian
-// format. Thus, a temporary local buffer is required.
-template <typename ParquetType, typename ArrowType>
-struct SerializeFunctor<ParquetType, ArrowType, arrow::enable_if_decimal<ArrowType>> {
-  Status Serialize(const arrow::Decimal128Array& array, ArrowWriteContext* ctx,
-                   FLBA* out) {
-    AllocateScratch(array, ctx);
-    auto offset = Offset(array);
+  const auto& decimal_type = static_cast<const arrow::Decimal128Type&>(*data.type());
+  const int32_t offset =
+      decimal_type.byte_width() - internal::DecimalSize(decimal_type.precision());
 
-    if (array.null_count() == 0) {
-      for (int64_t i = 0; i < array.length(); i++) {
-        out[i] = FixDecimalEndianess(array.GetValue(i), offset);
-      }
-    } else {
-      for (int64_t i = 0; i < array.length(); i++) {
-        out[i] = array.IsValid(i) ? FixDecimalEndianess(array.GetValue(i), offset)
-                                  : FixedLenByteArray();
+  const bool does_not_have_nulls =
+      writer->descr()->schema_node()->is_required() || data.null_count() == 0;
+
+  const auto valid_value_count = static_cast<size_t>(length - data.null_count()) * 2;
+  std::vector<uint64_t> big_endian_values(valid_value_count);
+
+  // TODO(phillipc): Look into whether our compilers will perform loop unswitching so we
+  // don't have to keep writing two loops to handle the case where we know there are no
+  // nulls
+  if (does_not_have_nulls) {
+    // no nulls, just dump the data
+    // todo(advancedxy): use a writeBatch to avoid this step
+    for (int64_t i = 0, j = 0; i < length; ++i, j += 2) {
+      auto unsigned_64_bit = reinterpret_cast<const uint64_t*>(data.GetValue(i));
+      big_endian_values[j] = arrow::BitUtil::ToBigEndian(unsigned_64_bit[1]);
+      big_endian_values[j + 1] = arrow::BitUtil::ToBigEndian(unsigned_64_bit[0]);
+      buffer[i] = FixedLenByteArray(
+          reinterpret_cast<const uint8_t*>(&big_endian_values[j]) + offset);
+    }
+  } else {
+    for (int64_t i = 0, buffer_idx = 0, j = 0; i < length; ++i) {
+      if (data.IsValid(i)) {
+        auto unsigned_64_bit = reinterpret_cast<const uint64_t*>(data.GetValue(i));
+        big_endian_values[j] = arrow::BitUtil::ToBigEndian(unsigned_64_bit[1]);
+        big_endian_values[j + 1] = arrow::BitUtil::ToBigEndian(unsigned_64_bit[0]);
+        buffer[buffer_idx++] = FixedLenByteArray(
+            reinterpret_cast<const uint8_t*>(&big_endian_values[j]) + offset);
+        j += 2;
       }
     }
-
-    return Status::OK();
   }
-
-  // Parquet's Decimal are stored with FixedLength values where the length is
-  // proportional to the precision. Arrow's Decimal are always stored with 16
-  // bytes. Thus the internal FLBA pointer must be adjusted by the offset calculated
-  // here.
-  int32_t Offset(const arrow::Decimal128Array& array) {
-    auto decimal_type = checked_pointer_cast<::arrow::Decimal128Type>(array.type());
-    return decimal_type->byte_width() - internal::DecimalSize(decimal_type->precision());
-  }
-
-  void AllocateScratch(const arrow::Decimal128Array& array, ArrowWriteContext* ctx) {
-    int64_t non_null_count = array.length() - array.null_count();
-    int64_t size = non_null_count * 16;
-    scratch_buffer = AllocateBuffer(ctx->memory_pool, size);
-    scratch = reinterpret_cast<int64_t*>(scratch_buffer->mutable_data());
-  }
-
-  FixedLenByteArray FixDecimalEndianess(const uint8_t* in, int64_t offset) {
-    const auto* u64_in = reinterpret_cast<const int64_t*>(in);
-    auto out = reinterpret_cast<const uint8_t*>(scratch) + offset;
-    *scratch++ = arrow::BitUtil::ToBigEndian(u64_in[1]);
-    *scratch++ = arrow::BitUtil::ToBigEndian(u64_in[0]);
-    return FixedLenByteArray(out);
-  }
-
-  std::shared_ptr<ResizableBuffer> scratch_buffer;
-  int64_t* scratch;
-};
+  PARQUET_CATCH_NOT_OK(writer->WriteBatch(num_levels, def_levels, rep_levels, buffer));
+  return Status::OK();
+}
 
 template <>
 Status TypedColumnWriterImpl<FLBAType>::WriteArrowDense(const int16_t* def_levels,
@@ -1743,7 +1614,7 @@ std::shared_ptr<ColumnWriter> ColumnWriter::Make(ColumnChunkMetaDataBuilder* met
     default:
       ParquetException::NYI("type reader not implemented");
   }
-  // Unreachable code, but suppress compiler warning
+  // Unreachable code, but supress compiler warning
   return std::shared_ptr<ColumnWriter>(nullptr);
 }
 

@@ -20,7 +20,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <utility>
 #include <vector>
 
 #include "arrow/array.h"
@@ -392,7 +391,7 @@ class TestArrowBuilderDecoding : public ::testing::Test {
     for (auto np : null_probabilities_) {
       InitTestCase(np);
 
-      typename EncodingTraits<ByteArrayType>::Accumulator acc;
+      ArrowBinaryAccumulator acc;
       acc.builder.reset(new ::arrow::BinaryBuilder);
       auto actual_num_values =
           decoder_->DecodeArrow(num_values_, null_count_, valid_bits_, 0, &acc);
@@ -417,7 +416,7 @@ class TestArrowBuilderDecoding : public ::testing::Test {
     for (auto np : null_probabilities_) {
       InitTestCase(np);
       SKIP_TEST_IF(null_count_ > 0)
-      typename EncodingTraits<ByteArrayType>::Accumulator acc;
+      ArrowBinaryAccumulator acc;
       acc.builder.reset(new ::arrow::BinaryBuilder);
       auto actual_num_values = decoder_->DecodeArrowNonNull(num_values_, &acc);
       std::shared_ptr<::arrow::Array> chunk;
@@ -500,7 +499,7 @@ TEST(PlainEncodingAdHoc, ArrowBinaryDirectPut) {
     int num_values = static_cast<int>(values->length() - values->null_count());
     decoder->SetData(num_values, buf->data(), static_cast<int>(buf->size()));
 
-    typename EncodingTraits<ByteArrayType>::Accumulator acc;
+    ArrowBinaryAccumulator acc;
     acc.builder.reset(new arrow::StringBuilder);
     ASSERT_EQ(num_values,
               decoder->DecodeArrow(static_cast<int>(values->length()),
@@ -511,6 +510,10 @@ TEST(PlainEncodingAdHoc, ArrowBinaryDirectPut) {
     ASSERT_OK(acc.builder->Finish(&result));
     ASSERT_EQ(50, result->length());
     arrow::AssertArraysEqual(*values, *result);
+
+    // Type checked
+    auto i32_values = rag.Int32(size, 0, 10, null_probability);
+    ASSERT_THROW(encoder->Put(*i32_values), ParquetException);
   };
 
   for (auto seed : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) {
@@ -518,17 +521,16 @@ TEST(PlainEncodingAdHoc, ArrowBinaryDirectPut) {
   }
 }
 
-template <typename T>
-void GetDictDecoder(DictEncoder<T>* encoder, int64_t num_values,
-                    std::shared_ptr<Buffer>* out_values,
-                    std::shared_ptr<Buffer>* out_dict, const ColumnDescriptor* descr,
-                    std::unique_ptr<TypedDecoder<T>>* out_decoder) {
-  auto decoder = MakeDictDecoder<T>(descr);
+void GetBinaryDictDecoder(DictEncoder<ByteArrayType>* encoder, int64_t num_values,
+                          std::shared_ptr<Buffer>* out_values,
+                          std::shared_ptr<Buffer>* out_dict,
+                          std::unique_ptr<ByteArrayDecoder>* out_decoder) {
+  auto decoder = MakeDictDecoder<ByteArrayType>();
   auto buf = encoder->FlushValues();
   auto dict_buf = AllocateBuffer(default_memory_pool(), encoder->dict_encoded_size());
   encoder->WriteDict(dict_buf->mutable_data());
 
-  auto dict_decoder = MakeTypedDecoder<T>(Encoding::PLAIN, descr);
+  auto dict_decoder = MakeTypedDecoder<ByteArrayType>(Encoding::PLAIN);
   dict_decoder->SetData(encoder->num_entries(), dict_buf->data(),
                         static_cast<int>(dict_buf->size()));
 
@@ -538,182 +540,8 @@ void GetDictDecoder(DictEncoder<T>* encoder, int64_t num_values,
 
   *out_values = buf;
   *out_dict = dict_buf;
-  ASSERT_NE(decoder, nullptr);
-  auto released = dynamic_cast<TypedDecoder<T>*>(decoder.release());
-  ASSERT_NE(released, nullptr);
-  *out_decoder = std::unique_ptr<TypedDecoder<T>>(released);
-}
-
-template <typename ParquetType>
-class EncodingAdHocTyped : public ::testing::Test {
- public:
-  using ArrowType = typename EncodingTraits<ParquetType>::ArrowType;
-  using EncoderType = typename EncodingTraits<ParquetType>::Encoder;
-  using DecoderType = typename EncodingTraits<ParquetType>::Decoder;
-  using BuilderType = typename EncodingTraits<ParquetType>::Accumulator;
-  using DictBuilderType = typename EncodingTraits<ParquetType>::DictAccumulator;
-
-  static const ColumnDescriptor* column_descr() {
-    static auto column_descr = ExampleDescr<ParquetType>();
-    return column_descr.get();
-  }
-
-  std::shared_ptr<arrow::Array> GetValues(int seed);
-
-  static std::shared_ptr<arrow::DataType> arrow_type();
-
-  void Plain(int seed) {
-    auto values = GetValues(seed);
-    auto encoder = MakeTypedEncoder<ParquetType>(
-        Encoding::PLAIN, /*use_dictionary=*/false, column_descr());
-    auto decoder = MakeTypedDecoder<ParquetType>(Encoding::PLAIN, column_descr());
-
-    ASSERT_NO_THROW(encoder->Put(*values));
-    auto buf = encoder->FlushValues();
-
-    int num_values = static_cast<int>(values->length() - values->null_count());
-    decoder->SetData(num_values, buf->data(), static_cast<int>(buf->size()));
-
-    BuilderType acc(arrow_type(), arrow::default_memory_pool());
-    ASSERT_EQ(num_values,
-              decoder->DecodeArrow(static_cast<int>(values->length()),
-                                   static_cast<int>(values->null_count()),
-                                   values->null_bitmap_data(), values->offset(), &acc));
-
-    std::shared_ptr<::arrow::Array> result;
-    ASSERT_OK(acc.Finish(&result));
-    ASSERT_EQ(50, result->length());
-    arrow::AssertArraysEqual(*values, *result);
-  }
-
-  void Dict(int seed) {
-    if (std::is_same<ParquetType, BooleanType>::value) {
-      return;
-    }
-
-    auto values = GetValues(seed);
-
-    auto owned_encoder =
-        MakeTypedEncoder<ParquetType>(Encoding::PLAIN,
-                                      /*use_dictionary=*/true, column_descr());
-    auto encoder = dynamic_cast<DictEncoder<ParquetType>*>(owned_encoder.get());
-
-    ASSERT_NO_THROW(encoder->Put(*values));
-
-    std::shared_ptr<Buffer> buf, dict_buf;
-    int num_values = static_cast<int>(values->length() - values->null_count());
-
-    std::unique_ptr<TypedDecoder<ParquetType>> decoder;
-    GetDictDecoder(encoder, num_values, &buf, &dict_buf, column_descr(), &decoder);
-
-    BuilderType acc(arrow_type(), arrow::default_memory_pool());
-    ASSERT_EQ(num_values,
-              decoder->DecodeArrow(static_cast<int>(values->length()),
-                                   static_cast<int>(values->null_count()),
-                                   values->null_bitmap_data(), values->offset(), &acc));
-
-    std::shared_ptr<::arrow::Array> result;
-    ASSERT_OK(acc.Finish(&result));
-    arrow::AssertArraysEqual(*values, *result);
-  }
-
-  void DictPutIndices() {
-    if (std::is_same<ParquetType, BooleanType>::value) {
-      return;
-    }
-
-    auto dict_values =
-        arrow::ArrayFromJSON(arrow_type(), std::is_same<ParquetType, FLBAType>::value
-                                               ? R"(["abcdefgh", "ijklmnop", "qrstuvwx"])"
-                                               : "[120, -37, 47]");
-    auto indices = arrow::ArrayFromJSON(arrow::int32(), "[0, 1, 2]");
-    auto indices_nulls = arrow::ArrayFromJSON(arrow::int32(), "[null, 0, 1, null, 2]");
-
-    auto expected = arrow::ArrayFromJSON(
-        arrow_type(), std::is_same<ParquetType, FLBAType>::value
-                          ? R"(["abcdefgh", "ijklmnop", "qrstuvwx", null,
-                                "abcdefgh", "ijklmnop", null, "qrstuvwx"])"
-                          : "[120, -37, 47, null, "
-                            "120, -37, null, 47]");
-
-    auto owned_encoder =
-        MakeTypedEncoder<ParquetType>(Encoding::PLAIN,
-                                      /*use_dictionary=*/true, column_descr());
-    auto owned_decoder = MakeDictDecoder<ParquetType>();
-
-    auto encoder = dynamic_cast<DictEncoder<ParquetType>*>(owned_encoder.get());
-
-    ASSERT_NO_THROW(encoder->PutDictionary(*dict_values));
-
-    // Trying to call PutDictionary again throws
-    ASSERT_THROW(encoder->PutDictionary(*dict_values), ParquetException);
-
-    ASSERT_NO_THROW(encoder->PutIndices(*indices));
-    ASSERT_NO_THROW(encoder->PutIndices(*indices_nulls));
-
-    std::shared_ptr<Buffer> buf, dict_buf;
-    int num_values = static_cast<int>(expected->length() - expected->null_count());
-
-    std::unique_ptr<TypedDecoder<ParquetType>> decoder;
-    GetDictDecoder(encoder, num_values, &buf, &dict_buf, column_descr(), &decoder);
-
-    BuilderType acc(arrow_type(), arrow::default_memory_pool());
-    ASSERT_EQ(num_values, decoder->DecodeArrow(static_cast<int>(expected->length()),
-                                               static_cast<int>(expected->null_count()),
-                                               expected->null_bitmap_data(),
-                                               expected->offset(), &acc));
-
-    std::shared_ptr<::arrow::Array> result;
-    ASSERT_OK(acc.Finish(&result));
-    arrow::AssertArraysEqual(*expected, *result);
-  }
-
- protected:
-  const int64_t size_ = 50;
-  const double null_probability_ = 0.25;
-};
-
-template <typename ParquetType>
-std::shared_ptr<arrow::DataType> EncodingAdHocTyped<ParquetType>::arrow_type() {
-  return arrow::TypeTraits<ArrowType>::type_singleton();
-}
-
-template <>
-std::shared_ptr<arrow::DataType> EncodingAdHocTyped<FLBAType>::arrow_type() {
-  return arrow::fixed_size_binary(sizeof(uint64_t));
-}
-
-template <typename ParquetType>
-std::shared_ptr<arrow::Array> EncodingAdHocTyped<ParquetType>::GetValues(int seed) {
-  arrow::random::RandomArrayGenerator rag(seed);
-  return rag.Numeric<ArrowType>(size_, 0, 10, null_probability_);
-}
-
-template <>
-std::shared_ptr<arrow::Array> EncodingAdHocTyped<BooleanType>::GetValues(int seed) {
-  arrow::random::RandomArrayGenerator rag(seed);
-  return rag.Boolean(size_, 0.1, null_probability_);
-}
-
-template <>
-std::shared_ptr<arrow::Array> EncodingAdHocTyped<FLBAType>::GetValues(int seed) {
-  arrow::random::RandomArrayGenerator rag(seed);
-  std::shared_ptr<arrow::Array> values;
-  ARROW_EXPECT_OK(
-      rag.UInt64(size_, 0, std::numeric_limits<uint64_t>::max(), null_probability_)
-          ->View(arrow_type(), &values));
-  return values;
-}
-
-using EncodingAdHocTypedCases =
-    ::testing::Types<BooleanType, Int32Type, Int64Type, FloatType, DoubleType, FLBAType>;
-
-TYPED_TEST_CASE(EncodingAdHocTyped, EncodingAdHocTypedCases);
-
-TYPED_TEST(EncodingAdHocTyped, PlainArrowDirectPut) {
-  for (auto seed : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) {
-    this->Plain(seed);
-  }
+  *out_decoder = std::unique_ptr<ByteArrayDecoder>(
+      dynamic_cast<ByteArrayDecoder*>(decoder.release()));
 }
 
 TEST(DictEncodingAdHoc, ArrowBinaryDirectPut) {
@@ -735,9 +563,9 @@ TEST(DictEncodingAdHoc, ArrowBinaryDirectPut) {
   std::unique_ptr<ByteArrayDecoder> decoder;
   std::shared_ptr<Buffer> buf, dict_buf;
   int num_values = static_cast<int>(values->length() - values->null_count());
-  GetDictDecoder(encoder, num_values, &buf, &dict_buf, nullptr, &decoder);
+  GetBinaryDictDecoder(encoder, num_values, &buf, &dict_buf, &decoder);
 
-  typename EncodingTraits<ByteArrayType>::Accumulator acc;
+  ArrowBinaryAccumulator acc;
   acc.builder.reset(new arrow::StringBuilder);
   ASSERT_EQ(num_values,
             decoder->DecodeArrow(static_cast<int>(values->length()),
@@ -748,8 +576,6 @@ TEST(DictEncodingAdHoc, ArrowBinaryDirectPut) {
   ASSERT_OK(acc.builder->Finish(&result));
   arrow::AssertArraysEqual(*values, *result);
 }
-
-TYPED_TEST(EncodingAdHocTyped, DictArrowDirectPut) { this->Dict(0); }
 
 TEST(DictEncodingAdHoc, PutDictionaryPutIndices) {
   // Part of ARROW-3246
@@ -778,9 +604,9 @@ TEST(DictEncodingAdHoc, PutDictionaryPutIndices) {
   std::unique_ptr<ByteArrayDecoder> decoder;
   std::shared_ptr<Buffer> buf, dict_buf;
   int num_values = static_cast<int>(expected->length() - expected->null_count());
-  GetDictDecoder(encoder, num_values, &buf, &dict_buf, nullptr, &decoder);
+  GetBinaryDictDecoder(encoder, num_values, &buf, &dict_buf, &decoder);
 
-  typename EncodingTraits<ByteArrayType>::Accumulator acc;
+  ArrowBinaryAccumulator acc;
   acc.builder.reset(new arrow::BinaryBuilder);
   ASSERT_EQ(num_values,
             decoder->DecodeArrow(static_cast<int>(expected->length()),
@@ -791,8 +617,6 @@ TEST(DictEncodingAdHoc, PutDictionaryPutIndices) {
   ASSERT_OK(acc.builder->Finish(&result));
   arrow::AssertArraysEqual(*expected, *result);
 }
-
-TYPED_TEST(EncodingAdHocTyped, DictArrowDirectPutIndices) { this->DictPutIndices(); }
 
 class DictEncoding : public TestArrowBuilderDecoding {
  public:

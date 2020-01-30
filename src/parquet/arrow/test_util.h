@@ -29,6 +29,7 @@
 #include "arrow/testing/random.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
+
 #include "parquet/column_reader.h"
 
 namespace parquet {
@@ -51,8 +52,29 @@ struct DecimalWithPrecisionAndScale {
   static constexpr int32_t scale = PRECISION - 1;
 };
 
+template <typename ArrowType>
+using is_arrow_float = std::is_floating_point<typename ArrowType::c_type>;
+
+template <typename ArrowType>
+using is_arrow_int = std::is_integral<typename ArrowType::c_type>;
+
+template <typename ArrowType>
+using is_arrow_date = std::is_same<ArrowType, ::arrow::Date64Type>;
+
+template <typename ArrowType>
+using is_arrow_string = std::is_same<ArrowType, ::arrow::StringType>;
+
+template <typename ArrowType>
+using is_arrow_binary = std::is_same<ArrowType, ::arrow::BinaryType>;
+
+template <typename ArrowType>
+using is_arrow_fixed_size_binary = std::is_same<ArrowType, ::arrow::FixedSizeBinaryType>;
+
+template <typename ArrowType>
+using is_arrow_bool = std::is_same<ArrowType, ::arrow::BooleanType>;
+
 template <class ArrowType>
-::arrow::enable_if_floating_point<ArrowType, Status> NonNullArray(
+typename std::enable_if<is_arrow_float<ArrowType>::value, Status>::type NonNullArray(
     size_t size, std::shared_ptr<Array>* out) {
   using c_type = typename ArrowType::c_type;
   std::vector<c_type> values;
@@ -63,8 +85,9 @@ template <class ArrowType>
 }
 
 template <class ArrowType>
-::arrow::enable_if_integer<ArrowType, Status> NonNullArray(size_t size,
-                                                           std::shared_ptr<Array>* out) {
+typename std::enable_if<
+    is_arrow_int<ArrowType>::value && !is_arrow_date<ArrowType>::value, Status>::type
+NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   std::vector<typename ArrowType::c_type> values;
   ::arrow::randint(size, 0, 64, &values);
 
@@ -76,10 +99,10 @@ template <class ArrowType>
 }
 
 template <class ArrowType>
-::arrow::enable_if_date<ArrowType, Status> NonNullArray(size_t size,
-                                                        std::shared_ptr<Array>* out) {
+typename std::enable_if<is_arrow_date<ArrowType>::value, Status>::type NonNullArray(
+    size_t size, std::shared_ptr<Array>* out) {
   std::vector<typename ArrowType::c_type> values;
-  ::arrow::randint(size, 0, 24, &values);
+  ::arrow::randint(size, 0, 64, &values);
   for (size_t i = 0; i < size; i++) {
     values[i] *= 86400000;
   }
@@ -87,13 +110,14 @@ template <class ArrowType>
   // Passing data type so this will work with TimestampType too
   ::arrow::NumericBuilder<ArrowType> builder(std::make_shared<ArrowType>(),
                                              ::arrow::default_memory_pool());
-  RETURN_NOT_OK(builder.AppendValues(values.data(), values.size()));
+  builder.AppendValues(values.data(), values.size());
   return builder.Finish(out);
 }
 
 template <class ArrowType>
-::arrow::enable_if_base_binary<ArrowType, Status> NonNullArray(
-    size_t size, std::shared_ptr<Array>* out) {
+typename std::enable_if<
+    is_arrow_string<ArrowType>::value || is_arrow_binary<ArrowType>::value, Status>::type
+NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   using BuilderType = typename ::arrow::TypeTraits<ArrowType>::BuilderType;
   BuilderType builder;
   for (size_t i = 0; i < size; i++) {
@@ -103,8 +127,8 @@ template <class ArrowType>
 }
 
 template <typename ArrowType>
-::arrow::enable_if_fixed_size_binary<ArrowType, Status> NonNullArray(
-    size_t size, std::shared_ptr<Array>* out) {
+typename std::enable_if<is_arrow_fixed_size_binary<ArrowType>::value, Status>::type
+NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   using BuilderType = typename ::arrow::TypeTraits<ArrowType>::BuilderType;
   // set byte_width to the length of "fixed": 5
   // todo: find a way to generate test data with more diversity.
@@ -136,8 +160,8 @@ static inline void random_decimals(int64_t n, uint32_t seed, int32_t precision,
 }
 
 template <typename ArrowType, int32_t precision = ArrowType::precision>
-::arrow::enable_if_t<
-    std::is_same<ArrowType, DecimalWithPrecisionAndScale<precision>>::value, Status>
+typename std::enable_if<
+    std::is_same<ArrowType, DecimalWithPrecisionAndScale<precision>>::value, Status>::type
 NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   constexpr int32_t kDecimalPrecision = precision;
   constexpr int32_t kDecimalScale = DecimalWithPrecisionAndScale<precision>::scale;
@@ -159,8 +183,8 @@ NonNullArray(size_t size, std::shared_ptr<Array>* out) {
 }
 
 template <class ArrowType>
-::arrow::enable_if_boolean<ArrowType, Status> NonNullArray(size_t size,
-                                                           std::shared_ptr<Array>* out) {
+typename std::enable_if<is_arrow_bool<ArrowType>::value, Status>::type NonNullArray(
+    size_t size, std::shared_ptr<Array>* out) {
   std::vector<uint8_t> values;
   ::arrow::randint(size, 0, 1, &values);
   ::arrow::BooleanBuilder builder;
@@ -170,7 +194,7 @@ template <class ArrowType>
 
 // This helper function only supports (size/2) nulls.
 template <typename ArrowType>
-::arrow::enable_if_floating_point<ArrowType, Status> NullableArray(
+typename std::enable_if<is_arrow_float<ArrowType>::value, Status>::type NullableArray(
     size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<Array>* out) {
   using c_type = typename ArrowType::c_type;
   std::vector<c_type> values;
@@ -189,9 +213,9 @@ template <typename ArrowType>
 
 // This helper function only supports (size/2) nulls.
 template <typename ArrowType>
-::arrow::enable_if_integer<ArrowType, Status> NullableArray(size_t size, size_t num_nulls,
-                                                            uint32_t seed,
-                                                            std::shared_ptr<Array>* out) {
+typename std::enable_if<
+    is_arrow_int<ArrowType>::value && !is_arrow_date<ArrowType>::value, Status>::type
+NullableArray(size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<Array>* out) {
   std::vector<typename ArrowType::c_type> values;
 
   // Seed is random in Arrow right now
@@ -211,14 +235,13 @@ template <typename ArrowType>
 }
 
 template <typename ArrowType>
-::arrow::enable_if_date<ArrowType, Status> NullableArray(size_t size, size_t num_nulls,
-                                                         uint32_t seed,
-                                                         std::shared_ptr<Array>* out) {
+typename std::enable_if<is_arrow_date<ArrowType>::value, Status>::type NullableArray(
+    size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<Array>* out) {
   std::vector<typename ArrowType::c_type> values;
 
   // Seed is random in Arrow right now
   (void)seed;
-  ::arrow::randint(size, 0, 24, &values);
+  ::arrow::randint(size, 0, 64, &values);
   for (size_t i = 0; i < size; i++) {
     values[i] *= 86400000;
   }
@@ -231,14 +254,16 @@ template <typename ArrowType>
   // Passing data type so this will work with TimestampType too
   ::arrow::NumericBuilder<ArrowType> builder(std::make_shared<ArrowType>(),
                                              ::arrow::default_memory_pool());
-  RETURN_NOT_OK(builder.AppendValues(values.data(), values.size(), valid_bytes.data()));
+  builder.AppendValues(values.data(), values.size(), valid_bytes.data());
   return builder.Finish(out);
 }
 
 // This helper function only supports (size/2) nulls yet.
 template <typename ArrowType>
-::arrow::enable_if_base_binary<ArrowType, Status> NullableArray(
-    size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<::arrow::Array>* out) {
+typename std::enable_if<
+    is_arrow_string<ArrowType>::value || is_arrow_binary<ArrowType>::value, Status>::type
+NullableArray(size_t size, size_t num_nulls, uint32_t seed,
+              std::shared_ptr<::arrow::Array>* out) {
   std::vector<uint8_t> valid_bytes(size, 1);
 
   for (size_t i = 0; i < num_nulls; i++) {
@@ -264,8 +289,9 @@ template <typename ArrowType>
 // This helper function only supports (size/2) nulls yet,
 // same as NullableArray<String|Binary>(..)
 template <typename ArrowType>
-::arrow::enable_if_fixed_size_binary<ArrowType, Status> NullableArray(
-    size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<::arrow::Array>* out) {
+typename std::enable_if<is_arrow_fixed_size_binary<ArrowType>::value, Status>::type
+NullableArray(size_t size, size_t num_nulls, uint32_t seed,
+              std::shared_ptr<::arrow::Array>* out) {
   std::vector<uint8_t> valid_bytes(size, 1);
 
   for (size_t i = 0; i < num_nulls; i++) {
@@ -290,8 +316,8 @@ template <typename ArrowType>
 }
 
 template <typename ArrowType, int32_t precision = ArrowType::precision>
-::arrow::enable_if_t<
-    std::is_same<ArrowType, DecimalWithPrecisionAndScale<precision>>::value, Status>
+typename std::enable_if<
+    std::is_same<ArrowType, DecimalWithPrecisionAndScale<precision>>::value, Status>::type
 NullableArray(size_t size, size_t num_nulls, uint32_t seed,
               std::shared_ptr<::arrow::Array>* out) {
   std::vector<uint8_t> valid_bytes(size, '\1');
@@ -319,9 +345,8 @@ NullableArray(size_t size, size_t num_nulls, uint32_t seed,
 
 // This helper function only supports (size/2) nulls yet.
 template <class ArrowType>
-::arrow::enable_if_boolean<ArrowType, Status> NullableArray(size_t size, size_t num_nulls,
-                                                            uint32_t seed,
-                                                            std::shared_ptr<Array>* out) {
+typename std::enable_if<is_arrow_bool<ArrowType>::value, Status>::type NullableArray(
+    size_t size, size_t num_nulls, uint32_t seed, std::shared_ptr<Array>* out) {
   std::vector<uint8_t> values;
 
   // Seed is random in Arrow right now

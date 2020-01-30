@@ -123,6 +123,9 @@ macro(build_arrow)
             ${EP_COMMON_CMAKE_ARGS}
             "-DCMAKE_INSTALL_PREFIX=${ARROW_PREFIX}"
             "-DCMAKE_INSTALL_RPATH=${ARROW_PREFIX}/lib"
+            "-DARROW_BUILD_UTILITIES=OFF"
+            "-DARROW_COMPUTE=ON"
+            "-DARROW_DATASET=OFF"
             )
 
     set(ARROW_STATIC_LIB_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}arrow")

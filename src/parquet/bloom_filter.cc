@@ -69,14 +69,14 @@ void BlockSplitBloomFilter::Init(const uint8_t* bitset, uint32_t num_bytes) {
 
 BlockSplitBloomFilter BlockSplitBloomFilter::Deserialize(ArrowInputStream* input) {
   uint32_t len, hash, algorithm;
-  int64_t bytes_available;
+  int64_t bytes_available = -1;
 
-  PARQUET_ASSIGN_OR_THROW(bytes_available, input->Read(sizeof(uint32_t), &len));
+  PARQUET_THROW_NOT_OK(input->Read(sizeof(uint32_t), &bytes_available, &len));
   if (static_cast<uint32_t>(bytes_available) != sizeof(uint32_t)) {
     throw ParquetException("Failed to deserialize from input stream");
   }
 
-  PARQUET_ASSIGN_OR_THROW(bytes_available, input->Read(sizeof(uint32_t), &hash));
+  PARQUET_THROW_NOT_OK(input->Read(sizeof(uint32_t), &bytes_available, &hash));
   if (static_cast<uint32_t>(bytes_available) != sizeof(uint32_t)) {
     throw ParquetException("Failed to deserialize from input stream");
   }
@@ -84,7 +84,7 @@ BlockSplitBloomFilter BlockSplitBloomFilter::Deserialize(ArrowInputStream* input
     throw ParquetException("Unsupported hash strategy");
   }
 
-  PARQUET_ASSIGN_OR_THROW(bytes_available, input->Read(sizeof(uint32_t), &algorithm));
+  PARQUET_THROW_NOT_OK(input->Read(sizeof(uint32_t), &bytes_available, &algorithm));
   if (static_cast<uint32_t>(bytes_available) != sizeof(uint32_t)) {
     throw ParquetException("Failed to deserialize from input stream");
   }
@@ -94,7 +94,8 @@ BlockSplitBloomFilter BlockSplitBloomFilter::Deserialize(ArrowInputStream* input
 
   BlockSplitBloomFilter bloom_filter;
 
-  PARQUET_ASSIGN_OR_THROW(auto buffer, input->Read(len));
+  std::shared_ptr<Buffer> buffer;
+  PARQUET_THROW_NOT_OK(input->Read(len, &buffer));
   bloom_filter.Init(buffer->data(), len);
   return bloom_filter;
 }

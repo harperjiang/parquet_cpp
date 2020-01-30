@@ -107,27 +107,35 @@ TEST(ParquetInputWrapper, BasicOperation) {
 
   ASSERT_FALSE(wrapper.closed());
 
-  ASSERT_OK_AND_EQ(0, wrapper.Tell());
+  int64_t position = -1;
+  ASSERT_OK(wrapper.Tell(&position));
+  ASSERT_EQ(0, position);
 
   // GetSize
-  ASSERT_OK_AND_EQ(static_cast<int64_t>(data.size()), wrapper.GetSize());
+  int64_t size = -1;
+  ASSERT_OK(wrapper.GetSize(&size));
+  ASSERT_EQ(size, static_cast<int64_t>(data.size()));
 
   // Read into memory
   uint8_t buf[4] = {0};
-  ASSERT_OK_AND_EQ(4, wrapper.Read(4, buf));
+  int64_t bytes_read = -1;
+  ASSERT_OK(wrapper.Read(4, &bytes_read, buf));
+  ASSERT_EQ(4, bytes_read);
   ASSERT_EQ(0, memcmp(buf, data.data(), 4));
 
-  ASSERT_OK_AND_EQ(4, wrapper.Tell());
+  ASSERT_OK(wrapper.Tell(&position));
+  ASSERT_EQ(4, position);
 
   // Seek
   ASSERT_RAISES(NotImplemented, wrapper.Seek(5));
 
   // Read buffer
-  ASSERT_OK_AND_ASSIGN(auto buffer, wrapper.Read(7));
+  std::shared_ptr<Buffer> buffer;
+  ASSERT_OK(wrapper.Read(7, &buffer));
   ASSERT_EQ(0, memcmp(buffer->data(), data.data() + 4, 7));
 
   // ReadAt
-  ASSERT_OK_AND_ASSIGN(buffer, wrapper.ReadAt(13, 4));
+  ASSERT_OK(wrapper.ReadAt(13, 4, &buffer));
   ASSERT_EQ(4, buffer->size());
   ASSERT_EQ(0, memcmp(buffer->data(), data.data() + 13, 4));
 
@@ -169,19 +177,22 @@ TEST(ParquetOutputWrapper, BasicOperation) {
   auto stream = std::unique_ptr<OutputStream>(new MockOutputStream);
   ParquetOutputWrapper wrapper(std::move(stream));
 
-  ASSERT_OK_AND_EQ(0, wrapper.Tell());
+  int64_t position = -1;
+  ASSERT_OK(wrapper.Tell(&position));
+  ASSERT_EQ(0, position);
 
   std::string data = "food";
 
   ASSERT_OK(wrapper.Write(reinterpret_cast<const uint8_t*>(data.data()), 4));
-  ASSERT_OK_AND_EQ(4, wrapper.Tell());
+  ASSERT_OK(wrapper.Tell(&position));
+  ASSERT_EQ(4, position);
 
   // Close
   ASSERT_OK(wrapper.Close());
   ASSERT_TRUE(wrapper.closed());
 
   // Test catch exceptions
-  ASSERT_RAISES(IOError, wrapper.Tell());
+  ASSERT_RAISES(IOError, wrapper.Tell(&position));
   ASSERT_RAISES(IOError, wrapper.Write(reinterpret_cast<const uint8_t*>(data.data()), 4));
 }
 

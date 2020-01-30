@@ -30,14 +30,11 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/record_batch.h"
-#include "arrow/testing/gtest_util.h"
 #include "arrow/testing/random.h"
 #include "arrow/testing/util.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
 #include "arrow/util/logging.h"
-#include "arrow/util/range.h"
 
 #include "parquet/api/reader.h"
 #include "parquet/api/writer.h"
@@ -351,7 +348,7 @@ void WriteTableToBuffer(const std::shared_ptr<Table>& table, int64_t row_group_s
 
   ASSERT_OK_NO_THROW(WriteTable(*table, ::arrow::default_memory_pool(), sink,
                                 row_group_size, write_props, arrow_properties));
-  ASSERT_OK_AND_ASSIGN(*out, sink->Finish());
+  ASSERT_OK_NO_THROW(sink->Finish(out));
 }
 
 void AssertChunkedEqual(const ChunkedArray& expected, const ChunkedArray& actual) {
@@ -381,11 +378,13 @@ void DoRoundtrip(const std::shared_ptr<Table>& table, int64_t row_group_size,
                      default_arrow_writer_properties(),
                  const ArrowReaderProperties& arrow_reader_properties =
                      default_arrow_reader_properties()) {
+  std::shared_ptr<Buffer> buffer;
+
   auto sink = CreateOutputStream();
   ASSERT_OK_NO_THROW(WriteTable(*table, ::arrow::default_memory_pool(), sink,
                                 row_group_size, writer_properties,
                                 arrow_writer_properties));
-  ASSERT_OK_AND_ASSIGN(auto buffer, sink->Finish());
+  ASSERT_OK_NO_THROW(sink->Finish(&buffer));
 
   std::unique_ptr<FileReader> reader;
   FileReaderBuilder builder;
@@ -499,7 +498,8 @@ class TestParquetIO : public ::testing::Test {
   }
 
   void ReaderFromSink(std::unique_ptr<FileReader>* out) {
-    ASSERT_OK_AND_ASSIGN(auto buffer, sink_->Finish());
+    std::shared_ptr<Buffer> buffer;
+    ASSERT_OK_NO_THROW(sink_->Finish(&buffer));
     ASSERT_OK_NO_THROW(OpenFile(std::make_shared<BufferReader>(buffer),
                                 ::arrow::default_memory_pool(), out));
   }
@@ -1032,7 +1032,7 @@ TEST_F(TestInt96ParquetIO, ReadIntoTimestamp) {
 
 using TestUInt32ParquetIO = TestParquetIO<::arrow::UInt32Type>;
 
-TEST_F(TestUInt32ParquetIO, Parquet_2_0_Compatibility) {
+TEST_F(TestUInt32ParquetIO, Parquet_2_0_Compability) {
   // This also tests max_definition_level = 1
   std::shared_ptr<Array> values;
 
@@ -1050,7 +1050,7 @@ TEST_F(TestUInt32ParquetIO, Parquet_2_0_Compatibility) {
   ASSERT_NO_FATAL_FAILURE(this->ReadAndCheckSingleColumnTable(values));
 }
 
-TEST_F(TestUInt32ParquetIO, Parquet_1_0_Compatibility) {
+TEST_F(TestUInt32ParquetIO, Parquet_1_0_Compability) {
   // This also tests max_definition_level = 1
   std::shared_ptr<Array> arr;
   ASSERT_OK(NullableArray<::arrow::UInt32Type>(LARGE_SIZE, 100, kDefaultSeed, &arr));
@@ -1529,58 +1529,53 @@ TEST(TestArrowReadWrite, CoerceTimestampsLosePrecision) {
   auto t3 = Table::Make(s3, {a_us});
   auto t4 = Table::Make(s4, {a_ns});
 
+  auto sink = CreateOutputStream();
+
   // OK to write to millis
   auto coerce_millis =
       (ArrowWriterProperties::Builder().coerce_timestamps(TimeUnit::MILLI)->build());
-  ASSERT_OK_NO_THROW(WriteTable(*t1, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(), coerce_millis));
-
-  ASSERT_OK_NO_THROW(WriteTable(*t2, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(), coerce_millis));
+  ASSERT_OK_NO_THROW(WriteTable(*t1, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), coerce_millis));
+  ASSERT_OK_NO_THROW(WriteTable(*t2, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), coerce_millis));
 
   // Loss of precision
-  ASSERT_RAISES(Invalid,
-                WriteTable(*t3, ::arrow::default_memory_pool(), CreateOutputStream(), 10,
-                           default_writer_properties(), coerce_millis));
-  ASSERT_RAISES(Invalid,
-                WriteTable(*t4, ::arrow::default_memory_pool(), CreateOutputStream(), 10,
-                           default_writer_properties(), coerce_millis));
+  ASSERT_RAISES(Invalid, WriteTable(*t3, ::arrow::default_memory_pool(), sink, 10,
+                                    default_writer_properties(), coerce_millis));
+  ASSERT_RAISES(Invalid, WriteTable(*t4, ::arrow::default_memory_pool(), sink, 10,
+                                    default_writer_properties(), coerce_millis));
 
   // OK to lose micros/nanos -> millis precision if we explicitly allow it
   auto allow_truncation_to_millis = (ArrowWriterProperties::Builder()
                                          .coerce_timestamps(TimeUnit::MILLI)
                                          ->allow_truncated_timestamps()
                                          ->build());
-  ASSERT_OK_NO_THROW(WriteTable(*t3, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(),
-                                allow_truncation_to_millis));
-  ASSERT_OK_NO_THROW(WriteTable(*t4, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(),
-                                allow_truncation_to_millis));
+  ASSERT_OK_NO_THROW(WriteTable(*t3, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), allow_truncation_to_millis));
+  ASSERT_OK_NO_THROW(WriteTable(*t4, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), allow_truncation_to_millis));
 
   // OK to write to micros
   auto coerce_micros =
       (ArrowWriterProperties::Builder().coerce_timestamps(TimeUnit::MICRO)->build());
-  ASSERT_OK_NO_THROW(WriteTable(*t1, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(), coerce_micros));
-  ASSERT_OK_NO_THROW(WriteTable(*t2, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(), coerce_micros));
-  ASSERT_OK_NO_THROW(WriteTable(*t3, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(), coerce_micros));
+  ASSERT_OK_NO_THROW(WriteTable(*t1, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), coerce_micros));
+  ASSERT_OK_NO_THROW(WriteTable(*t2, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), coerce_micros));
+  ASSERT_OK_NO_THROW(WriteTable(*t3, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), coerce_micros));
 
   // Loss of precision
-  ASSERT_RAISES(Invalid,
-                WriteTable(*t4, ::arrow::default_memory_pool(), CreateOutputStream(), 10,
-                           default_writer_properties(), coerce_micros));
+  ASSERT_RAISES(Invalid, WriteTable(*t4, ::arrow::default_memory_pool(), sink, 10,
+                                    default_writer_properties(), coerce_micros));
 
   // OK to lose nanos -> micros precision if we explicitly allow it
   auto allow_truncation_to_micros = (ArrowWriterProperties::Builder()
                                          .coerce_timestamps(TimeUnit::MICRO)
                                          ->allow_truncated_timestamps()
                                          ->build());
-  ASSERT_OK_NO_THROW(WriteTable(*t4, ::arrow::default_memory_pool(), CreateOutputStream(),
-                                10, default_writer_properties(),
-                                allow_truncation_to_micros));
+  ASSERT_OK_NO_THROW(WriteTable(*t4, ::arrow::default_memory_pool(), sink, 10,
+                                default_writer_properties(), allow_truncation_to_micros));
 }
 
 TEST(TestArrowReadWrite, ImplicitSecondToMillisecondTimestampCoercion) {
@@ -1680,17 +1675,16 @@ TEST(TestArrowReadWrite, ParquetVersionTimestampDifferences) {
       ArrowWriterProperties::Builder().coerce_timestamps(TimeUnit::NANO)->build();
   {
     // Neither Parquet version 1.0 nor 2.0 allow coercing to seconds
+    auto sink = CreateOutputStream();
     std::shared_ptr<Table> actual_table;
-    ASSERT_RAISES(
-        NotImplemented,
-        WriteTable(*input_table, ::arrow::default_memory_pool(), CreateOutputStream(),
-                   input_table->num_rows(), parquet_version_1_properties,
-                   arrow_coerce_to_seconds_properties));
-    ASSERT_RAISES(
-        NotImplemented,
-        WriteTable(*input_table, ::arrow::default_memory_pool(), CreateOutputStream(),
-                   input_table->num_rows(), parquet_version_2_properties,
-                   arrow_coerce_to_seconds_properties));
+    ASSERT_RAISES(NotImplemented,
+                  WriteTable(*input_table, ::arrow::default_memory_pool(), sink,
+                             input_table->num_rows(), parquet_version_1_properties,
+                             arrow_coerce_to_seconds_properties));
+    ASSERT_RAISES(NotImplemented,
+                  WriteTable(*input_table, ::arrow::default_memory_pool(), sink,
+                             input_table->num_rows(), parquet_version_2_properties,
+                             arrow_coerce_to_seconds_properties));
   }
   {
     // Using Parquet version 1.0, coercing to milliseconds or microseconds is allowed
@@ -1726,12 +1720,12 @@ TEST(TestArrowReadWrite, ParquetVersionTimestampDifferences) {
   }
   {
     // Using Parquet version 1.0, coercing to (int64) nanoseconds is not allowed
+    auto sink = CreateOutputStream();
     std::shared_ptr<Table> actual_table;
-    ASSERT_RAISES(
-        NotImplemented,
-        WriteTable(*input_table, ::arrow::default_memory_pool(), CreateOutputStream(),
-                   input_table->num_rows(), parquet_version_1_properties,
-                   arrow_coerce_to_nanos_properties));
+    ASSERT_RAISES(NotImplemented,
+                  WriteTable(*input_table, ::arrow::default_memory_pool(), sink,
+                             input_table->num_rows(), parquet_version_1_properties,
+                             arrow_coerce_to_nanos_properties));
   }
   {
     // Using Parquet version 2.0, coercing to (int64) nanoseconds is allowed
@@ -1911,12 +1905,12 @@ TEST(TestArrowReadWrite, ReadSingleRowGroup) {
 
   std::shared_ptr<Table> concatenated;
 
-  ASSERT_OK_AND_ASSIGN(concatenated, ::arrow::ConcatenateTables({r1, r2}));
+  ASSERT_OK(ConcatenateTables({r1, r2}, &concatenated));
   AssertTablesEqual(*concatenated, *table, /*same_chunk_layout=*/false);
 
   ASSERT_TRUE(table->Equals(*r3));
   ASSERT_TRUE(r2->Equals(*r4));
-  ASSERT_OK_AND_ASSIGN(concatenated, ::arrow::ConcatenateTables({r1, r4}));
+  ASSERT_OK(ConcatenateTables({r1, r4}, &concatenated));
   ASSERT_TRUE(table->Equals(*concatenated));
 }
 
@@ -2123,8 +2117,8 @@ TEST(TestArrowReadWrite, InvalidTable) {
   auto sink = CreateOutputStream();
   auto invalid_table = InvalidTable();
 
-  ASSERT_RAISES(Invalid, WriteTable(*invalid_table, ::arrow::default_memory_pool(),
-                                    CreateOutputStream(), 1, default_writer_properties(),
+  ASSERT_RAISES(Invalid, WriteTable(*invalid_table, ::arrow::default_memory_pool(), sink,
+                                    1, default_writer_properties(),
                                     default_arrow_writer_properties()));
 }
 
@@ -2174,44 +2168,6 @@ TEST(TestArrowReadWrite, TableWithDuplicateColumns) {
 
   auto table = Table::Make(schema, {a0, a1});
   ASSERT_NO_FATAL_FAILURE(CheckSimpleRoundtrip(table, table->num_rows()));
-}
-
-// Disabled until implementation can be finished.
-TEST(TestArrowReadWrite, DISABLED_CanonicalNestedRoundTrip) {
-  auto doc_id = field("DocId", ::arrow::int64(), /*nullable=*/false);
-  auto links = field(
-      "Links",
-      ::arrow::struct_({field("Backward", list(::arrow::int64()), /*nullable=*/false),
-                        field("Forward", list(::arrow::int64()), /*nullable=*/false)}));
-  auto name_struct = field(
-      "NameStruct",
-      ::arrow::struct_(
-          {field("Language",
-                 ::arrow::list(field(
-                     "lang_struct",
-                     ::arrow::struct_({field("Code", ::arrow::utf8(), /*nullable=*/false),
-                                       field("Country", ::arrow::utf8())})))),
-           field("Url", ::arrow::utf8())}));
-  auto name = field("Name", ::arrow::list(name_struct), /*nullable=*/false);
-  auto schema = std::make_shared<::arrow::Schema>(
-      std::vector<std::shared_ptr<::arrow::Field>>({doc_id, links, name}));
-
-  auto doc_id_array = ::arrow::ArrayFromJSON(doc_id->type(), "[10, 20]");
-  auto links_id_array =
-      ::arrow::ArrayFromJSON(links->type(),
-                             "[{\"Backward\":[], \"Forward\":[20, 40, 60]}, "
-                             "{\"Backward\":[10, 30], \"Forward\":[80]}]");
-  auto name_array =
-      ::arrow::ArrayFromJSON(name->type(),
-                             R"([[{"Language": [{"Code": "en_us", "Country":"us"},
-                                   {"Code": "en_us", "Country": null}],
-                      "Url": "http://A"},
-                     {"Url": "http://B"},
-                     {"Language": [{"Code": "en-gb", "Country": "gb"}]}],
-                    [{"Url": "http://C"}]])");
-  auto expected =
-      ::arrow::Table::Make(schema, {doc_id_array, links_id_array, name_array});
-  CheckSimpleRoundtrip(expected, 2);
 }
 
 TEST(TestArrowReadWrite, DictionaryColumnChunkedWrite) {
@@ -2296,7 +2252,8 @@ class TestNestedSchemaRead : public ::testing::TestWithParam<Repetition::type> {
   std::shared_ptr<::arrow::Int32Array> values_array_ = nullptr;
 
   void InitReader() {
-    ASSERT_OK_AND_ASSIGN(auto buffer, nested_parquet_->Finish());
+    std::shared_ptr<Buffer> buffer;
+    ASSERT_OK_NO_THROW(nested_parquet_->Finish(&buffer));
     ASSERT_OK_NO_THROW(OpenFile(std::make_shared<BufferReader>(buffer),
                                 ::arrow::default_memory_pool(), &reader_));
   }
@@ -2338,7 +2295,7 @@ class TestNestedSchemaRead : public ::testing::TestWithParam<Repetition::type> {
       }
     }
     ASSERT_EQ(local_null_count, expected_nulls);
-    ASSERT_OK(array.ValidateFull());
+    ASSERT_OK(array.Validate());
   }
 
   void ValidateColumnArray(const ::arrow::Int32Array& array, size_t expected_nulls) {
@@ -2727,7 +2684,8 @@ TEST(TestArrowReaderAdHoc, LARGE_MEMORY_TEST(LargeStringColumn)) {
   }
   ASSERT_OK_NO_THROW(arrow_writer->Close());
 
-  ASSERT_OK_AND_ASSIGN(auto tables_buffer, sink->Finish());
+  std::shared_ptr<Buffer> tables_buffer;
+  ASSERT_OK_NO_THROW(sink->Finish(&tables_buffer));
 
   // drop to save memory
   table.reset();
@@ -2738,7 +2696,7 @@ TEST(TestArrowReaderAdHoc, LARGE_MEMORY_TEST(LargeStringColumn)) {
   std::unique_ptr<FileReader> arrow_reader;
   ASSERT_OK(FileReader::Make(default_memory_pool(), std::move(reader), &arrow_reader));
   ASSERT_OK_NO_THROW(arrow_reader->ReadTable(&table));
-  ASSERT_OK(table->ValidateFull());
+  ASSERT_OK(table->Validate());
 }
 
 TEST(TestArrowReaderAdHoc, HandleDictPageOffsetZero) {
@@ -2814,7 +2772,8 @@ TEST(TestArrowWriterAdHoc, SchemaMismatch) {
   auto writer_schm = ::arrow::schema({field("POS", ::arrow::uint32())});
   auto table_schm = ::arrow::schema({field("POS", ::arrow::int64())});
   using ::arrow::io::BufferOutputStream;
-  ASSERT_OK_AND_ASSIGN(auto outs, BufferOutputStream::Create(1 << 10, pool));
+  std::shared_ptr<BufferOutputStream> outs;
+  ASSERT_OK(BufferOutputStream::Create(1 << 10, pool, &outs));
   auto props = default_writer_properties();
   std::unique_ptr<arrow::FileWriter> writer;
   ASSERT_OK(arrow::FileWriter::Open(*writer_schm, pool, outs, props, &writer));
@@ -2831,53 +2790,41 @@ TEST(TestArrowWriterAdHoc, SchemaMismatch) {
 
 class TestArrowReadDictionary : public ::testing::TestWithParam<double> {
  public:
-  static constexpr int kNumRowGroups = 16;
-
-  struct {
-    int num_rows = 1024 * kNumRowGroups;
-    int num_row_groups = kNumRowGroups;
-    int num_uniques = 128;
-  } options;
+  static constexpr int kNumRowGroups = 10;
 
   void SetUp() override {
     GenerateData(GetParam());
 
-    // Write `num_row_groups` row groups; each row group will have a different dictionary
+    // Write 4 row groups; each row group will have a different dictionary
     ASSERT_NO_FATAL_FAILURE(
-        WriteTableToBuffer(expected_dense_, options.num_rows / options.num_row_groups,
+        WriteTableToBuffer(expected_dense_, expected_dense_->num_rows() / kNumRowGroups,
                            default_arrow_writer_properties(), &buffer_));
 
     properties_ = default_arrow_reader_properties();
   }
 
   void GenerateData(double null_probability) {
+    constexpr int num_unique = 1000;
+    constexpr int repeat = 50;
     constexpr int64_t min_length = 2;
     constexpr int64_t max_length = 100;
     ::arrow::random::RandomArrayGenerator rag(0);
-    dense_values_ = rag.StringWithRepeats(options.num_rows, options.num_uniques,
-                                          min_length, max_length, null_probability);
+    dense_values_ = rag.StringWithRepeats(repeat * num_unique, num_unique, min_length,
+                                          max_length, null_probability);
     expected_dense_ = MakeSimpleTable(dense_values_, /*nullable=*/true);
   }
 
   void TearDown() override {}
 
   void CheckReadWholeFile(const Table& expected) {
-    ASSERT_OK_AND_ASSIGN(auto reader, GetReader());
+    std::unique_ptr<FileReader> reader;
+
+    FileReaderBuilder builder;
+    ASSERT_OK_NO_THROW(builder.Open(std::make_shared<BufferReader>(buffer_)));
+    ASSERT_OK(builder.properties(properties_)->Build(&reader));
 
     std::shared_ptr<Table> actual;
     ASSERT_OK_NO_THROW(reader->ReadTable(&actual));
-    ::arrow::AssertTablesEqual(expected, *actual, /*same_chunk_layout=*/false);
-  }
-
-  void CheckStreamReadWholeFile(const Table& expected) {
-    ASSERT_OK_AND_ASSIGN(auto reader, GetReader());
-
-    std::unique_ptr<::arrow::RecordBatchReader> rb;
-    ASSERT_OK(reader->GetRecordBatchReader(
-        ::arrow::internal::Iota(options.num_row_groups), &rb));
-
-    std::shared_ptr<Table> actual;
-    ASSERT_OK_NO_THROW(rb->ReadAll(&actual));
     ::arrow::AssertTablesEqual(expected, *actual, /*same_chunk_layout=*/false);
   }
 
@@ -2889,16 +2836,6 @@ class TestArrowReadDictionary : public ::testing::TestWithParam<double> {
   std::shared_ptr<Table> expected_dict_;
   std::shared_ptr<Buffer> buffer_;
   ArrowReaderProperties properties_;
-
-  ::arrow::Result<std::unique_ptr<FileReader>> GetReader() {
-    std::unique_ptr<FileReader> reader;
-
-    FileReaderBuilder builder;
-    RETURN_NOT_OK(builder.Open(std::make_shared<BufferReader>(buffer_)));
-    RETURN_NOT_OK(builder.properties(properties_)->Build(&reader));
-
-    return reader;
-  }
 };
 
 void AsDictionary32Encoded(const Array& arr, std::shared_ptr<Array>* out) {
@@ -2911,33 +2848,14 @@ void AsDictionary32Encoded(const Array& arr, std::shared_ptr<Array>* out) {
 TEST_P(TestArrowReadDictionary, ReadWholeFileDict) {
   properties_.set_read_dictionary(0, true);
 
-  auto num_row_groups = options.num_row_groups;
-  auto chunk_size = options.num_rows / num_row_groups;
-
-  std::vector<std::shared_ptr<Array>> chunks(num_row_groups);
-  for (int i = 0; i < num_row_groups; ++i) {
+  std::vector<std::shared_ptr<Array>> chunks(kNumRowGroups);
+  const int64_t chunk_size = expected_dense_->num_rows() / kNumRowGroups;
+  for (int i = 0; i < kNumRowGroups; ++i) {
     AsDictionary32Encoded(*dense_values_->Slice(chunk_size * i, chunk_size), &chunks[i]);
   }
   auto ex_table = MakeSimpleTable(std::make_shared<ChunkedArray>(chunks),
                                   /*nullable=*/true);
   CheckReadWholeFile(*ex_table);
-}
-
-TEST_P(TestArrowReadDictionary, StreamReadWholeFileDict) {
-  // ARROW-6895 and ARROW-7545 reading a parquet file with a dictionary of
-  // binary data, e.g. String, will return invalid values when using the
-  // RecordBatchReader (stream) interface. In some cases, this will trigger an
-  // infinite loop of the calling thread.
-
-  // Recompute generated data with only one row-group
-  options.num_row_groups = 1;
-  options.num_rows = 16;
-  SetUp();
-
-  // Would trigger an infinite loop when requesting a batch greater than the
-  // number of available rows in a row group.
-  properties_.set_batch_size(options.num_rows * 2);
-  CheckStreamReadWholeFile(*expected_dense_);
 }
 
 TEST_P(TestArrowReadDictionary, ReadWholeFileDense) {

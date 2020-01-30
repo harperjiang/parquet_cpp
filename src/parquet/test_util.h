@@ -338,7 +338,8 @@ static std::shared_ptr<DataPageV1> MakeDataPage(
     num_values = std::max(page_builder.num_values(), num_vals);
   }
 
-  PARQUET_ASSIGN_OR_THROW(auto buffer, page_stream->Finish());
+  std::shared_ptr<Buffer> buffer;
+  PARQUET_THROW_NOT_OK(page_stream->Finish(&buffer));
 
   return std::make_shared<DataPageV1>(buffer, num_values, encoding,
                                       page_builder.def_level_encoding(),
@@ -534,7 +535,7 @@ static inline int MakePages(const ColumnDescriptor* d, int num_pages, int levels
   } else {
     num_values = num_levels;
   }
-  // Create repetition levels
+  // Create repitition levels
   if (max_rep_level > 0) {
     rep_levels.resize(num_levels);
     random_numbers(num_levels, seed, zero, max_rep_level, rep_levels.data());

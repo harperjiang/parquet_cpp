@@ -26,7 +26,6 @@
 #include <ostream>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "parquet/platform.h"
@@ -80,7 +79,7 @@ class PARQUET_EXPORT ColumnPath {
  public:
   ColumnPath() : path_() {}
   explicit ColumnPath(const std::vector<std::string>& path) : path_(path) {}
-  explicit ColumnPath(std::vector<std::string>&& path) : path_(std::move(path)) {}
+  explicit ColumnPath(std::vector<std::string>&& path) : path_(path) {}
 
   static std::shared_ptr<ColumnPath> FromDotString(const std::string& dotstring);
   static std::shared_ptr<ColumnPath> FromNode(const Node& node);
@@ -113,7 +112,7 @@ class PARQUET_EXPORT Node {
       : type_(type),
         name_(name),
         repetition_(repetition),
-        logical_type_(std::move(logical_type)),
+        logical_type_(logical_type),
         id_(id),
         parent_(NULLPTR) {}
 
@@ -336,7 +335,7 @@ void PARQUET_EXPORT PrintSchema(const schema::Node* schema, std::ostream& stream
 // definition levels.
 class PARQUET_EXPORT ColumnDescriptor {
  public:
-  ColumnDescriptor(schema::NodePtr node, int16_t max_definition_level,
+  ColumnDescriptor(const schema::NodePtr& node, int16_t max_definition_level,
                    int16_t max_repetition_level,
                    const SchemaDescriptor* schema_descr = NULLPTR);
 
@@ -402,7 +401,7 @@ class PARQUET_EXPORT SchemaDescriptor {
 
   // Analyze the schema
   void Init(std::unique_ptr<schema::Node> schema);
-  void Init(schema::NodePtr schema);
+  void Init(const schema::NodePtr& schema);
 
   const ColumnDescriptor* Column(int i) const;
 

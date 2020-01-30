@@ -20,7 +20,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <utility>
 
 #include "parquet/metadata.h"
 #include "parquet/platform.h"
@@ -31,10 +30,6 @@ namespace parquet {
 
 class ColumnWriter;
 class OutputStream;
-
-// FIXME: copied from reader-internal.cc
-static constexpr uint8_t kParquetMagic[4] = {'P', 'A', 'R', '1'};
-static constexpr uint8_t kParquetEMagic[4] = {'P', 'A', 'R', 'E'};
 
 class PARQUET_EXPORT RowGroupWriter {
  public:
@@ -109,33 +104,16 @@ PARQUET_EXPORT
 void WriteMetaDataFile(const FileMetaData& file_metadata,
                        ::arrow::io::OutputStream* sink);
 
-PARQUET_EXPORT
-void WriteEncryptedFileMetadata(const FileMetaData& file_metadata,
-                                ArrowOutputStream* sink,
-                                const std::shared_ptr<Encryptor>& encryptor,
-                                bool encrypt_footer);
-
-void WriteFileCryptoMetaData(const FileCryptoMetaData& crypto_metadata,
-                             OutputStream* sink);
-PARQUET_EXPORT
-void WriteEncryptedFileMetadata(const FileMetaData& file_metadata,
-                                ::arrow::io::OutputStream* sink,
-                                const std::shared_ptr<Encryptor>& encryptor = NULLPTR,
-                                bool encrypt_footer = false);
-PARQUET_EXPORT
-void WriteFileCryptoMetaData(const FileCryptoMetaData& crypto_metadata,
-                             ::arrow::io::OutputStream* sink);
-
 class PARQUET_EXPORT ParquetFileWriter {
  public:
   // Forward declare a virtual class 'Contents' to aid dependency injection and more
   // easily create test fixtures
   // An implementation of the Contents class is defined in the .cc file
   struct Contents {
-    Contents(std::shared_ptr<::parquet::schema::GroupNode> schema,
-             std::shared_ptr<const KeyValueMetadata> key_value_metadata)
-        : schema_(), key_value_metadata_(std::move(key_value_metadata)) {
-      schema_.Init(std::move(schema));
+    Contents(const std::shared_ptr<::parquet::schema::GroupNode>& schema,
+             const std::shared_ptr<const KeyValueMetadata>& key_value_metadata)
+        : schema_(), key_value_metadata_(key_value_metadata) {
+      schema_.Init(schema);
     }
     virtual ~Contents() {}
     // Perform any cleanup associated with the file contents
@@ -165,7 +143,7 @@ class PARQUET_EXPORT ParquetFileWriter {
     /// This should be the only place this is stored. Everything else is a const reference
     std::shared_ptr<const KeyValueMetadata> key_value_metadata_;
 
-    const std::shared_ptr<FileMetaData>& metadata() const { return file_metadata_; }
+    const std::shared_ptr<FileMetaData> metadata() const { return file_metadata_; }
     std::shared_ptr<FileMetaData> file_metadata_;
   };
 
@@ -173,16 +151,17 @@ class PARQUET_EXPORT ParquetFileWriter {
   ~ParquetFileWriter();
 
   static std::unique_ptr<ParquetFileWriter> Open(
-      std::shared_ptr<::arrow::io::OutputStream> sink,
-      std::shared_ptr<schema::GroupNode> schema,
-      std::shared_ptr<WriterProperties> properties = default_writer_properties(),
-      std::shared_ptr<const KeyValueMetadata> key_value_metadata = NULLPTR);
+      const std::shared_ptr<::arrow::io::OutputStream>& sink,
+      const std::shared_ptr<schema::GroupNode>& schema,
+      const std::shared_ptr<WriterProperties>& properties = default_writer_properties(),
+      const std::shared_ptr<const KeyValueMetadata>& key_value_metadata = NULLPTR);
 
   ARROW_DEPRECATED("Use version with arrow::io::OutputStream")
   static std::unique_ptr<ParquetFileWriter> Open(
-      std::shared_ptr<OutputStream> sink, std::shared_ptr<schema::GroupNode> schema,
-      std::shared_ptr<WriterProperties> properties = default_writer_properties(),
-      std::shared_ptr<const KeyValueMetadata> key_value_metadata = NULLPTR);
+      const std::shared_ptr<OutputStream>& sink,
+      const std::shared_ptr<schema::GroupNode>& schema,
+      const std::shared_ptr<WriterProperties>& properties = default_writer_properties(),
+      const std::shared_ptr<const KeyValueMetadata>& key_value_metadata = NULLPTR);
 
   void Open(std::unique_ptr<Contents> contents);
   void Close();
