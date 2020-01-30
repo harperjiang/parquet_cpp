@@ -141,11 +141,12 @@ macro(build_arrow)
     endif()
 
     message("Downloading Apache Arrow from ${ARROW_SOURCE_URL}")
+    set(ARROW_EP_SRC "${CMAKE_CURRENT_BINARY_DIR}/arrow_ep-prefix/src/arrow_ep")
     externalproject_add(arrow_ep
             URL ${ARROW_SOURCE_URL}
             URL_HASH "SHA256=${ARROW_BUILD_SHA256_CHECKSUM}"
             BUILD_BYPRODUCTS "${ARROW_STATIC_LIB}"
-            CONFIGURE_COMMAND ${CMAKE_COMMAND} ${ARROW_CMAKE_ARGS} cpp
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} ${ARROW_CMAKE_ARGS} ${ARROW_EP_SRC}/cpp
             DEPENDS ${ARROW_DEPENDENCIES} ${EP_LOG_OPTIONS})
 
     add_library(Arrow::arrow STATIC IMPORTED)
