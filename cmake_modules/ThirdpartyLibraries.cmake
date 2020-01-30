@@ -126,9 +126,9 @@ macro(build_arrow)
             )
 
     set(ARROW_STATIC_LIB_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}arrow")
-    if(${UPPERCASE_BUILD_TYPE} STREQUAL "DEBUG")
-        set(ARROW_STATIC_LIB_NAME "${ARROW_STATIC_LIB_NAME}d")
-    endif()
+#    if(${UPPERCASE_BUILD_TYPE} STREQUAL "DEBUG")
+#        set(ARROW_STATIC_LIB_NAME "${ARROW_STATIC_LIB_NAME}d")
+#    endif()
     set(ARROW_STATIC_LIB
             "${AROW_PREFIX}/lib/${ARROW_STATIC_LIB_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX}")
 
@@ -136,7 +136,7 @@ macro(build_arrow)
         get_apache_mirror()
         set(
                 ARROW_SOURCE_URL
-                "${APACHE_MIRROR}/arrow/${ARROW_BUILD_VERSION}/arrow-${ARROW_BUILD_VERSION}.tar.gz"
+                "${APACHE_MIRROR}/arrow/arrow-${ARROW_BUILD_VERSION}/apache-arrow-${ARROW_BUILD_VERSION}.tar.gz"
         )
     endif()
 
@@ -145,7 +145,7 @@ macro(build_arrow)
             URL ${ARROW_SOURCE_URL}
             URL_HASH "SHA256=${ARROW_BUILD_SHA256_CHECKSUM}"
             BUILD_BYPRODUCTS "${ARROW_STATIC_LIB}"
-            CMAKE_ARGS ${ARROW_CMAKE_ARGS}
+            CONFIGURE_COMMAND ${CMAKE_COMMAND} ${ARROW_CMAKE_ARGS} cpp
             DEPENDS ${ARROW_DEPENDENCIES} ${EP_LOG_OPTIONS})
 
     add_library(Arrow::arrow STATIC IMPORTED)
