@@ -375,21 +375,6 @@ function(ADD_TEST_CASE REL_TEST_NAME)
   set(TEST_PATH "${EXECUTABLE_OUTPUT_PATH}/${TEST_NAME}")
   add_executable(${TEST_NAME} ${SOURCES})
 
-  # With OSX and conda, we need to set the correct RPATH so that dependencies
-  # are found. The installed libraries with conda have an RPATH that matches
-  # for executables and libraries lying in $ENV{CONDA_PREFIX}/bin or
-  # $ENV{CONDA_PREFIX}/lib but our test libraries and executables are not
-  # installed there.
-  if(NOT "$ENV{CONDA_PREFIX}" STREQUAL "" AND APPLE)
-    set_target_properties(${TEST_NAME}
-                          PROPERTIES BUILD_WITH_INSTALL_RPATH
-                                     TRUE
-                                     INSTALL_RPATH_USE_LINK_PATH
-                                     TRUE
-                                     INSTALL_RPATH
-                                     "${EXECUTABLE_OUTPUT_PATH};$ENV{CONDA_PREFIX}/lib")
-  endif()
-
   if(ARG_STATIC_LINK_LIBS)
     # Customize link libraries
     target_link_libraries(${TEST_NAME} PRIVATE ${ARG_STATIC_LINK_LIBS})
@@ -409,25 +394,11 @@ function(ADD_TEST_CASE REL_TEST_NAME)
     add_dependencies(${TEST_NAME} ${ARG_EXTRA_DEPENDENCIES})
   endif()
 
-  if(ARROW_TEST_MEMCHECK AND NOT ARG_NO_VALGRIND)
-    set_property(TARGET ${TEST_NAME}
-                 APPEND_STRING
-                 PROPERTY COMPILE_FLAGS " -DARROW_VALGRIND")
-    add_test(
-      ${TEST_NAME} bash -c
-      "cd '${CMAKE_SOURCE_DIR}'; \
-               valgrind --suppressions=valgrind.supp --tool=memcheck --gen-suppressions=all \
-                 --leak-check=full --leak-check-heuristics=stdstring --error-exitcode=1 ${TEST_PATH}"
-      )
-  elseif(WIN32)
-    add_test(${TEST_NAME} ${TEST_PATH})
-  else()
-    add_test(${TEST_NAME}
+  add_test(${TEST_NAME}
              ${BUILD_SUPPORT_DIR}/run-test.sh
              ${CMAKE_BINARY_DIR}
              test
              ${TEST_PATH})
-  endif()
 
   # Add test as dependency of relevant targets
   add_dependencies(all-tests ${TEST_NAME})

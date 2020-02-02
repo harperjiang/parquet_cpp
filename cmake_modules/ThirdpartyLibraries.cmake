@@ -52,8 +52,8 @@ macro(build_thrift)
             -DWITH_PYTHON=OFF
             -DWITH_HASKELL=OFF
             -DWITH_CPP=ON
-            -DWITH_LIBEVENT=OFF
             -DWITH_STATIC_LIB=ON
+            -DWITH_LIBEVENT=OFF
             # Work around https://gitlab.kitware.com/cmake/cmake/issues/18865
             -DBoost_NO_BOOST_CMAKE=ON)
 
@@ -97,6 +97,7 @@ macro(build_thrift)
     endif()
 
     message("Downloading Apache Thrift from ${THRIFT_SOURCE_URL}")
+    message("Thrift CMAKE Args ${THRIFT_CMAKE_ARGS}")
     externalproject_add(thrift_ep
             URL ${THRIFT_SOURCE_URL}
             URL_HASH "MD5=${THRIFT_BUILD_MD5_CHECKSUM}"
@@ -123,17 +124,31 @@ macro(build_arrow)
             ${EP_COMMON_CMAKE_ARGS}
             "-DCMAKE_INSTALL_PREFIX=${ARROW_PREFIX}"
             "-DCMAKE_INSTALL_RPATH=${ARROW_PREFIX}/lib"
-            "-DARROW_BUILD_UTILITIES=OFF"
-            "-DARROW_COMPUTE=ON"
-            "-DARROW_DATASET=OFF"
+            "-DARROW_BUILD_TESTS=ON"
+            "-DARROW_USE_GLOG=ON"
+            "-DARROW_WITH_BROTLI=ON"
+            "-DARROW_WITH_BZ2=ON"
+            "-DARROW_WITH_LZ4=ON"
+            "-DARROW_WITH_SNAPPY=ON"
+            "-DARROW_WITH_ZLIB=ON"
+            "-DARROW_WITH_ZSTD=ON"
             )
 
-    set(ARROW_STATIC_LIB_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}arrow")
+    set(ARROW_LIB_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}arrow")
+    set(ARROW_TESTING_LIB_NAME "${CMAKE_STATIC_LIBRARY_PREFIX}arrow_testing")
+
 #    if(${UPPERCASE_BUILD_TYPE} STREQUAL "DEBUG")
 #        set(ARROW_STATIC_LIB_NAME "${ARROW_STATIC_LIB_NAME}d")
 #    endif()
     set(ARROW_STATIC_LIB
-            "${AROW_PREFIX}/lib/${ARROW_STATIC_LIB_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+            "${ARROW_PREFIX}/lib/${ARROW_LIB_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    set(ARROW_TESTING_STATIC_LIB
+            "${ARROW_PREFIX}/lib/${ARROW_TESTING_LIB_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+
+    set(ARROW_SHARED_LIB
+            "${ARROW_PREFIX}/lib/${ARROW_LIB_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    set(ARROW_TESTING_SHARED_LIB
+            "${ARROW_PREFIX}/lib/${ARROW_TESTING_LIB_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
     if("${ARROW_SOURCE_URL}" STREQUAL "FROM-APACHE-MIRROR")
         get_apache_mirror()
@@ -152,16 +167,186 @@ macro(build_arrow)
             CONFIGURE_COMMAND ${CMAKE_COMMAND} ${ARROW_CMAKE_ARGS} ${ARROW_EP_SRC}/cpp
             DEPENDS ${ARROW_DEPENDENCIES} ${EP_LOG_OPTIONS})
 
-    add_library(Arrow::arrow STATIC IMPORTED)
+    add_library(Arrow::ArrowStatic STATIC IMPORTED)
+    add_library(Arrow::TestStatic STATIC IMPORTED)
+    add_library(Arrow::ArrowShared SHARED IMPORTED)
+    add_library(Arrow::TestShared SHARED IMPORTED)
+
     # The include directory must exist before it is referenced by a target.
     file(MAKE_DIRECTORY "${ARROW_INCLUDE_DIR}")
-    set_target_properties(Arrow::arrow
+
+    set_target_properties(Arrow::ArrowStatic
             PROPERTIES IMPORTED_LOCATION "${ARROW_STATIC_LIB}"
             INTERFACE_INCLUDE_DIRECTORIES "${ARROW_INCLUDE_DIR}")
-    add_dependencies(Arrow::arrow arrow_ep)
+    set_target_properties(Arrow::TestStatic
+            PROPERTIES IMPORTED_LOCATION "${ARROW_TESTING_STATIC_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ARROW_INCLUDE_DIR}")
+    set_target_properties(Arrow::ArrowShared
+            PROPERTIES IMPORTED_LOCATION "${ARROW_SHARED_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ARROW_INCLUDE_DIR}")
+    set_target_properties(Arrow::TestShared
+            PROPERTIES IMPORTED_LOCATION "${ARROW_TESTING_SHARED_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ARROW_INCLUDE_DIR}")
+
+    add_dependencies(Arrow::ArrowStatic arrow_ep)
+    add_dependencies(Arrow::ArrowShared arrow_ep)
+
+    add_dependencies(Arrow::TestStatic arrow_ep)
+    add_dependencies(Arrow::TestShared arrow_ep)
+
+    target_link_libraries(Arrow::TestShared
+            INTERFACE GTest::Main
+            INTERFACE GTest::GTest
+            INTERFACE GTest::GMock)
+
     set(ARROW_VERSION ${ARROW_BUILD_VERSION})
     include_directories(${ARROW_INCLUDE_DIR})
 endmacro()
+
+macro(build_gtest)
+    message(STATUS "Building gtest from source")
+    set(GTEST_VENDORED TRUE)
+    set(GTEST_SOURCE_URL "https://github.com/google/googletest/archive/release-${GTEST_BUILD_VERSION}.tar.gz")
+    set(GTEST_CMAKE_CXX_FLAGS ${EP_CXX_FLAGS})
+
+    if(CMAKE_BUILD_TYPE MATCHES DEBUG)
+        set(CMAKE_GTEST_DEBUG_EXTENSION "d")
+    else()
+        set(CMAKE_GTEST_DEBUG_EXTENSION "")
+    endif()
+
+    if(APPLE)
+        set(GTEST_CMAKE_CXX_FLAGS ${GTEST_CMAKE_CXX_FLAGS} -DGTEST_USE_OWN_TR1_TUPLE=1
+                -Wno-unused-value -Wno-ignored-attributes)
+    endif()
+
+    if(MSVC)
+        set(GTEST_CMAKE_CXX_FLAGS "${GTEST_CMAKE_CXX_FLAGS} -DGTEST_CREATE_SHARED_LIBRARY=1")
+    endif()
+
+    set(GTEST_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/googletest_ep-prefix/src/googletest_ep")
+    set(GTEST_INCLUDE_DIR "${GTEST_PREFIX}/include")
+
+    set(_GTEST_RUNTIME_DIR ${BUILD_OUTPUT_ROOT_DIRECTORY})
+
+    if(MSVC)
+        set(_GTEST_IMPORTED_TYPE IMPORTED_IMPLIB)
+        set(_GTEST_LIBRARY_SUFFIX
+                "${CMAKE_GTEST_DEBUG_EXTENSION}${CMAKE_IMPORT_LIBRARY_SUFFIX}")
+        # Use the import libraries from the EP
+        set(_GTEST_LIBRARY_DIR "${GTEST_PREFIX}/lib")
+    else()
+        set(_GTEST_IMPORTED_TYPE IMPORTED_LOCATION)
+        set(_GTEST_LIBRARY_SUFFIX
+                "${CMAKE_GTEST_DEBUG_EXTENSION}${CMAKE_SHARED_LIBRARY_SUFFIX}")
+
+        # Library and runtime same on non-Windows
+        set(_GTEST_LIBRARY_DIR "${GTEST_PREFIX}/lib")
+    endif()
+
+    set(GTEST_SHARED_LIB
+            "${_GTEST_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}gtest${_GTEST_LIBRARY_SUFFIX}")
+    set(GMOCK_SHARED_LIB
+            "${_GTEST_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}gmock${_GTEST_LIBRARY_SUFFIX}")
+    set(
+            GTEST_MAIN_SHARED_LIB
+            "${_GTEST_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}gtest_main${_GTEST_LIBRARY_SUFFIX}"
+    )
+    set(GTEST_CMAKE_ARGS
+            ${EP_COMMON_TOOLCHAIN}
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+            "-DCMAKE_INSTALL_PREFIX=${GTEST_PREFIX}"
+            -DBUILD_SHARED_LIBS=ON
+            -DCMAKE_CXX_FLAGS=${GTEST_CMAKE_CXX_FLAGS}
+            -DCMAKE_CXX_FLAGS_${UPPERCASE_BUILD_TYPE}=${GTEST_CMAKE_CXX_FLAGS})
+    set(GMOCK_INCLUDE_DIR "${GTEST_PREFIX}/include")
+
+    if(APPLE)
+        set(GTEST_CMAKE_ARGS ${GTEST_CMAKE_ARGS} "-DCMAKE_MACOSX_RPATH:BOOL=ON")
+    endif()
+
+    if(CMAKE_GENERATOR STREQUAL "Xcode")
+        # Xcode projects support multi-configuration builds.  This forces the gtest build
+        # to use the same output directory as a single-configuration Makefile driven build.
+        list(
+                APPEND GTEST_CMAKE_ARGS "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${_GTEST_LIBRARY_DIR}"
+                "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_${CMAKE_BUILD_TYPE}=${_GTEST_RUNTIME_DIR}")
+    endif()
+
+    if(MSVC)
+        if(NOT ("${CMAKE_GENERATOR}" STREQUAL "Ninja"))
+            set(_GTEST_RUNTIME_DIR ${_GTEST_RUNTIME_DIR}/${CMAKE_BUILD_TYPE})
+        endif()
+        set(GTEST_CMAKE_ARGS
+                ${GTEST_CMAKE_ARGS} "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=${_GTEST_RUNTIME_DIR}"
+                "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_${CMAKE_BUILD_TYPE}=${_GTEST_RUNTIME_DIR}")
+    else()
+        list(
+                APPEND GTEST_CMAKE_ARGS "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${_GTEST_RUNTIME_DIR}"
+                "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_${CMAKE_BUILD_TYPE}=${_GTEST_RUNTIME_DIR}")
+    endif()
+
+    add_definitions(-DGTEST_LINKED_AS_SHARED_LIBRARY=1)
+
+    if(MSVC AND NOT ARROW_USE_STATIC_CRT)
+        set(GTEST_CMAKE_ARGS ${GTEST_CMAKE_ARGS} -Dgtest_force_shared_crt=ON)
+    endif()
+
+    externalproject_add(googletest_ep
+            URL ${GTEST_SOURCE_URL}
+            BUILD_BYPRODUCTS ${GTEST_SHARED_LIB} ${GTEST_MAIN_SHARED_LIB}
+            ${GMOCK_SHARED_LIB}
+            CMAKE_ARGS ${GTEST_CMAKE_ARGS} ${EP_LOG_OPTIONS})
+
+    # The include directory must exist before it is referenced by a target.
+    file(MAKE_DIRECTORY "${GTEST_INCLUDE_DIR}")
+
+    add_library(GTest::GTest SHARED IMPORTED)
+    set_target_properties(GTest::GTest
+            PROPERTIES ${_GTEST_IMPORTED_TYPE} "${GTEST_SHARED_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${GTEST_INCLUDE_DIR}")
+
+    add_library(GTest::Main SHARED IMPORTED)
+    set_target_properties(GTest::Main
+            PROPERTIES ${_GTEST_IMPORTED_TYPE} "${GTEST_MAIN_SHARED_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${GTEST_INCLUDE_DIR}")
+
+    add_library(GTest::GMock SHARED IMPORTED)
+    set_target_properties(GTest::GMock
+            PROPERTIES ${_GTEST_IMPORTED_TYPE} "${GMOCK_SHARED_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${GTEST_INCLUDE_DIR}")
+    include_directories(${GTEST_INCLUDE_DIR})
+    add_dependencies(GTest::GTest googletest_ep)
+    add_dependencies(GTest::Main googletest_ep)
+    add_dependencies(GTest::GMock googletest_ep)
+endmacro()
+
+
+
+set(EP_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${UPPERCASE_BUILD_TYPE}}")
+set(EP_C_FLAGS "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${UPPERCASE_BUILD_TYPE}}")
+
+if(NOT MSVC)
+    # Set -fPIC on all external projects
+    set(EP_CXX_FLAGS "${EP_CXX_FLAGS} -fPIC")
+    set(EP_C_FLAGS "${EP_C_FLAGS} -fPIC")
+endif()
+
+# CC/CXX environment variables are captured on the first invocation of the
+# builder (e.g make or ninja) instead of when CMake is invoked into to build
+# directory. This leads to issues if the variables are exported in a subshell
+# and the invocation of make/ninja is in distinct subshell without the same
+# environment (CC/CXX).
+set(EP_COMMON_TOOLCHAIN -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+
+if(CMAKE_AR)
+    set(EP_COMMON_TOOLCHAIN ${EP_COMMON_TOOLCHAIN} -DCMAKE_AR=${CMAKE_AR})
+endif()
+
+if(CMAKE_RANLIB)
+    set(EP_COMMON_TOOLCHAIN ${EP_COMMON_TOOLCHAIN} -DCMAKE_RANLIB=${CMAKE_RANLIB})
+endif()
 
 
 set(EP_COMMON_CMAKE_ARGS
@@ -172,7 +357,7 @@ set(EP_COMMON_CMAKE_ARGS
         -DCMAKE_CXX_FLAGS=${EP_CXX_FLAGS}
         -DCMAKE_CXX_FLAGS_${UPPERCASE_BUILD_TYPE}=${EP_CXX_FLAGS})
 
-if(NOT ARROW_VERBOSE_THIRDPARTY_BUILD)
+if(NOT PARQUET_VERBOSE_THIRDPARTY_BUILD)
     set(EP_LOG_OPTIONS
             LOG_CONFIGURE
             1
@@ -209,3 +394,4 @@ endif()
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
+

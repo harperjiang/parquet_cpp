@@ -23,7 +23,7 @@ add_dependencies(parquet-all parquet parquet-tests parquet-benchmarks)
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/.parquetcppversion" PARQUET_VERSION)
 string(REPLACE "\n" "" PARQUET_VERSION "${PARQUET_VERSION}")
-string(REGEX MATCH "^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)" VERSION ${PARQUET_VERSION})
+string(REGEX MATCH "^([0-9]+\\.[0-9]+\\.[0-9]+(\\.[0-9]+)?)" VERSION ${PARQUET_VERSION})
 if(NOT VERSION)
   message(FATAL_ERROR "invalid .parquetcppversion")
 endif()
@@ -39,19 +39,19 @@ function(ADD_PARQUET_TEST REL_TEST_NAME)
 
   set(TEST_ARGUMENTS PREFIX "parquet" LABELS "parquet-tests")
 
-  if(ARROW_TEST_LINKAGE STREQUAL "static")
-    add_test_case(${REL_TEST_NAME}
+#  if(ARROW_TEST_LINKAGE STREQUAL "static")
+  add_test_case(${REL_TEST_NAME}
                   STATIC_LINK_LIBS
                   ${PARQUET_STATIC_TEST_LINK_LIBS}
                   ${TEST_ARGUMENTS}
                   ${ARG_UNPARSED_ARGUMENTS})
-  else()
-    add_test_case(${REL_TEST_NAME}
-                  STATIC_LINK_LIBS
-                  ${PARQUET_SHARED_TEST_LINK_LIBS}
-                  ${TEST_ARGUMENTS}
-                  ${ARG_UNPARSED_ARGUMENTS})
-  endif()
+#  else()
+#    add_test_case(${REL_TEST_NAME}
+#                  STATIC_LINK_LIBS
+#                  ${PARQUET_SHARED_TEST_LINK_LIBS}
+#                  ${TEST_ARGUMENTS}
+#                  ${ARG_UNPARSED_ARGUMENTS})
+#  endif()
 endfunction()
 
 function(ADD_PARQUET_BENCHMARK REL_TEST_NAME)
@@ -82,11 +82,11 @@ endfunction()
 
 # TODO(wesm): Handling of ABI/SO version
 
-if(ARROW_BUILD_STATIC)
-  set(PARQUET_STATIC_LINK_LIBS arrow_static)
-  set(ARROW_LIBRARIES_FOR_STATIC_TESTS arrow_testing_static arrow_static)
+if(PARQUET_BUILD_STATIC)
+  set(PARQUET_STATIC_LINK_LIBS Arrow::ArrowStatic)
+  set(ARROW_LIBRARIES_FOR_STATIC_TESTS Arrow::TestStatic Arrow::ArrowStatic)
 else()
-  set(ARROW_LIBRARIES_FOR_STATIC_TESTS arrow_testing_shared arrow_shared)
+  set(ARROW_LIBRARIES_FOR_STATIC_TESTS Arrow::TestShared Arrow::ArrowShared)
 endif()
 
 set(PARQUET_BOOST_LINK_LIBS)
@@ -104,7 +104,7 @@ elseif(NOT MSVC)
   set(PARQUET_MIN_TEST_LIBS ${PARQUET_MIN_TEST_LIBS} pthread ${CMAKE_DL_LIBS})
 endif()
 
-set(PARQUET_SHARED_TEST_LINK_LIBS arrow_testing_shared ${PARQUET_MIN_TEST_LIBS}
+set(PARQUET_SHARED_TEST_LINK_LIBS Arrow::TestShared ${PARQUET_MIN_TEST_LIBS}
                                   parquet_shared Thrift::thrift)
 
 set(PARQUET_STATIC_TEST_LINK_LIBS ${PARQUET_MIN_TEST_LIBS} parquet_static
@@ -174,7 +174,7 @@ add_custom_target(parquet-thrift-deps ALL DEPENDS ${THRIFT_OUTPUT_FILES})
 set(PARQUET_DEPENDENCIES ${PARQUET_DEPENDENCIES} parquet-thrift-deps)
 
 if(NOT PARQUET_MINIMAL_DEPENDENCY)
-  set(PARQUET_SHARED_LINK_LIBS arrow_shared)
+  set(PARQUET_SHARED_LINK_LIBS Arrow::ArrowShared)
 
   # These are libraries that we will link privately with parquet_shared (as they
   # do not need to be linked transitively by other linkers)
@@ -207,6 +207,8 @@ if(NOT APPLE AND NOT MSVC)
 endif()
 
 add_arrow_lib(parquet
+              BUILD_STATIC
+              BUILD_SHARED
               SOURCES
               ${PARQUET_SRCS}
               OUTPUTS

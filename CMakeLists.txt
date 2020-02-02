@@ -3,6 +3,7 @@ project(parquet_cpp)
 
 set(CMAKE_CXX_STANDARD 14)
 
+
 if(NOT PARQUET_BUILD_STATIC)
     set(BUILD_STATIC OFF)
 else()
@@ -42,9 +43,11 @@ string(TOLOWER ${CMAKE_BUILD_TYPE} LOWERCASE_BUILD_TYPE)
 string(TOUPPER ${CMAKE_BUILD_TYPE} UPPERCASE_BUILD_TYPE)
 
 
-# Thirdparty Libraries
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
 
+include(SetupCxxFlags)
+
+# Thirdparty Libraries
 include(ThirdpartyLibraries)
 set(THRIFT_SOURCE_URL FROM-APACHE-MIRROR)
 set(THRIFT_BUILD_VERSION "0.13.0")
@@ -56,6 +59,11 @@ set(ARROW_BUILD_VERSION "0.15.1")
 set(ARROW_BUILD_SHA256_CHECKSUM "9a2c58c72310eafebb4997244cbeeb8c26696320d0ae3eb3e8512f75ef856fc9")
 build_arrow()
 include_directories(${ARROW_INCLUDE_DIR})
+
+if(NOT NO_TESTS)
+    set(GTEST_BUILD_VERSION "1.8.1")
+    build_gtest()
+endif()
 
 include(BuildUtils)
 
